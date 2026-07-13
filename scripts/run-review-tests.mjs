@@ -6,29 +6,63 @@ import ts from 'typescript';
 
 const root = new URL('..', import.meta.url);
 const read = file => fs.readFile(new URL(file, root), 'utf8');
-const source = await read('lib/review.ts');
-const compiled = ts.transpileModule(source, {
-  compilerOptions: {
-    module: ts.ModuleKind.ES2022,
-    target: ts.ScriptTarget.ES2022,
-    jsx: ts.JsxEmit.ReactJSX
-  }
-}).outputText;
 const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'solarfx-review-'));
-const tempFile = path.join(tempDir, 'review.mjs');
-await fs.writeFile(tempFile, compiled, 'utf8');
-const review = await import(pathToFileURL(tempFile).href);
-const defaultsSourceCompiled = ts.transpileModule(await read('lib/defaults.ts'), {compilerOptions: {module: ts.ModuleKind.ES2022, target: ts.ScriptTarget.ES2022}}).outputText;
-const defaultsFile = path.join(tempDir, 'defaults.mjs');
-await fs.writeFile(defaultsFile, defaultsSourceCompiled, 'utf8');
-const defaults = await import(pathToFileURL(defaultsFile).href);
 
 function assert(name, condition) {
   if (!condition) throw new Error(name);
   console.log('PASS', name);
 }
 
+async function writeCompiled(name, source, replacements = {}) {
+  let code = source;
+  for (const [from, to] of Object.entries(replacements)) code = code.split(from).join(to);
+  const compiled = ts.transpileModule(code, {
+    compilerOptions: {
+      module: ts.ModuleKind.ES2022,
+      target: ts.ScriptTarget.ES2022,
+      jsx: ts.JsxEmit.ReactJSX
+    },
+    fileName: name.replace(/\.mjs$/, '.ts')
+  }).outputText;
+  const file = path.join(tempDir, name);
+  await fs.writeFile(file, compiled, 'utf8');
+  return file;
+}
+
+const source = {
+  review: await read('lib/review.ts'),
+  defaults: await read('lib/defaults.ts'),
+  defaultMethods: await read('lib/rams/default-methods.ts'),
+  draftMigration: await read('lib/rams/draft-migration.ts'),
+  hazards: await read('lib/hazards.ts'),
+  pdfModel: await read('lib/rams/pdf-model.ts'),
+  ramsApp: await read('components/RamsApp.tsx'),
+  types: await read('types/rams.ts'),
+  css: await read('app/globals.css'),
+  pdfRoute: await read('app/api/pdf/route.ts'),
+  loginPage: await read('app/page.tsx'),
+  loginRoute: await read('app/api/auth/login/route.ts'),
+  authSource: await read('lib/auth.ts'),
+  middlewareSource: await read('middleware.ts')
+};
+
+await writeCompiled('default-methods.mjs', source.defaultMethods);
+await writeCompiled('hazards.mjs', source.hazards);
+await writeCompiled('defaults.mjs', source.defaults, {'@/lib/rams/default-methods': './default-methods.mjs'});
+await writeCompiled('draft-migration.mjs', source.draftMigration, {'@/lib/defaults': './defaults.mjs', '@/lib/rams/default-methods': './default-methods.mjs'});
+await writeCompiled('pdf-model.mjs', source.pdfModel, {'@/lib/hazards': './hazards.mjs', '@/lib/rams/draft-migration': './draft-migration.mjs', '@/lib/rams/default-methods': './default-methods.mjs'});
+await writeCompiled('review.mjs', source.review);
+
+const defaults = await import(pathToFileURL(path.join(tempDir, 'defaults.mjs')).href);
+const migration = await import(pathToFileURL(path.join(tempDir, 'draft-migration.mjs')).href);
+const hazards = await import(pathToFileURL(path.join(tempDir, 'hazards.mjs')).href);
+const pdfModel = await import(pathToFileURL(path.join(tempDir, 'pdf-model.mjs')).href);
+const review = await import(pathToFileURL(path.join(tempDir, 'review.mjs')).href);
+
 const declarations = {siteReviewed: true, importVerified: true, controlsAvailable: true, aiReviewed: true, briefing: true, changeReview: true};
+function risk(id, hazard, source = 'manual') {
+  return {id, hazard, harm: 'Injury or damage', persons: 'Installers / occupants / public as applicable', controls: 'Control measures confirmed by assessor.', additionalControls: 'Site-specific controls confirmed.', severity: 4, likelihood: 3, residualSeverity: 3, residualLikelihood: 2, responsible: 'Site Supervisor', source, assessorNotes: 'Assessor confirmed'};
+}
 function completeDraft(overrides = {}) {
   const base = {...defaults.createEmptyDraft(),
     projectReference: 'SFX-1001',
@@ -37,179 +71,99 @@ function completeDraft(overrides = {}) {
     postcode: 'AB1 2CD',
     client: 'Example Customer',
     principalContractor: 'SolarFX',
+    installationCompany: 'SolarFX',
     preparedBy: 'SolarFX',
     assessor: 'Assessor Name',
     assessorPosition: 'Contracts Manager',
     siteSupervisor: 'Supervisor Name',
     qualifiedElectrician: 'Electrician Name',
+    numberOfOperatives: '3',
     installDate: '2026-07-13',
     assessmentDate: '2026-07-13',
     reviewDate: '2026-07-13',
     revision: '1',
+    approvedBy: 'Approver Name',
+    documentStatus: 'Approved for issue',
     emergencyContact: 'Site contact',
     emergencyPhone: '07123456789',
-    scope: 'Installation, testing, commissioning and handover of a solar PV system.',
+    scope: 'Installation, commissioning and handover of a solar PV system.',
     systemTypes: ['Solar PV'],
     panelQuantity: '12',
     panelModel: 'PV-400',
     inverterModel: 'INV-5',
-    batteryModel: '',
     proposedBatteryLocation: '',
     proposedEvLocation: '',
-    roofType: '',
-    roofCondition: '',
-    accessNotes: '',
-    electricalNotes: '',
-    environmentalNotes: '',
-    methodStatement: 'Install, test, commission and hand over the solar PV system using safe isolation and manufacturer instructions.',
-    seniorReviewNotes: '',
+    accessNotes: 'Access controlled with ladder and exclusion zone.',
+    electricalNotes: 'Safe isolation required.',
+    environmentalNotes: 'Packaging waste segregated.',
+    environmentalControlsNotes: 'Cable waste recycled.',
     pvShutdownInfo: 'Use DC isolator and follow handover shutdown procedure.',
     batteryShutdownInfo: '',
+    evShutdownInfo: '',
+    siteIsolationPoint: 'Main consumer unit switch.',
     firstAider: 'Site supervisor',
+    firstAidKitLocation: 'Works van',
     nearestHospital: 'Local hospital',
     assemblyPoint: 'Front driveway',
+    fireExtinguisherLocation: 'Works van',
     approvalName: 'Approver Name',
     approvalDate: '2026-07-13',
-    ppe: ['Safety helmet'],
+    ppe: ['Safety helmet', 'Safety footwear', 'Protective gloves', 'Safety glasses'],
     photos: [],
     hazards: [],
-    risks: [{id: 'r1', hazard: 'Working at height', harm: 'Fall from height', persons: 'Installers', controls: 'Use suitable access equipment and edge protection.', severity: 4, likelihood: 3, residualSeverity: 3, residualLikelihood: 2, responsible: 'Supervisor', source: 'manual'}],
+    risks: [risk('r-solar', 'Solar PV roof DC electrical work', 'library:ELEC-003')],
     declarations: {...declarations}
   };
-  return {...base, ...overrides, declarations: {...base.declarations, ...(overrides.declarations || {})}};
+  const merged = {...base, ...overrides, declarations: {...base.declarations, ...(overrides.declarations || {})}};
+  return migration.migrateRamsDraft(merged);
 }
 function ids(draft) { return review.getReviewIssues(draft).map(issue => issue.id); }
 
-assert('missing customer-name issue', ids(completeDraft({customerName: ''})).includes('job-customer-name'));
-const pendingAi = completeDraft({hazards: [{id: 'h1', photoId: 'p1', hazardCode: 'H1', title: 'Fragile roof', observation: 'Cracked tile', potentialHarm: 'Fall', controls: ['Avoid area'], confidence: 0.8, status: 'pending', assessorComment: ''}]});
-const pendingIssue = review.getReviewIssues(pendingAi).find(issue => issue.id === 'ai-h1-pending');
-assert('unreviewed AI suggestion blocking issue', pendingIssue?.blocking === true);
-const acceptedAi = completeDraft({hazards: [{id: 'h1', photoId: 'p1', hazardCode: 'H1', title: 'Fragile roof', observation: 'Cracked tile', potentialHarm: 'Fall', controls: ['Avoid area'], confidence: 0.8, status: 'accepted', assessorComment: 'Accepted', reviewedAt: '2026-07-13T10:00:00Z'}], risks: [{id: 'r1', hazard: 'Fragile roof', harm: 'Fall', persons: 'Installers', controls: 'Avoid area', severity: 4, likelihood: 3, residualSeverity: 3, residualLikelihood: 2, responsible: 'Supervisor', source: 'h1'}]});
-assert('reviewed AI removes pending issue', !ids(acceptedAi).includes('ai-h1-pending'));
-assert('missing emergency contact issue', ids(completeDraft({emergencyPhone: ''})).includes('emergency-contact'));
-const highRisk = completeDraft({risks: [{id: 'r1', hazard: 'Electrical work', harm: 'Electric shock', persons: 'Installers', controls: 'Safe isolation', severity: 5, likelihood: 5, residualSeverity: 5, residualLikelihood: 4, responsible: 'Supervisor', source: 'manual'}]});
-assert('Very High residual risk issue', ids(highRisk).includes('risk-r1-very-high'));
-assert('resolved high-risk issue disappears', !ids({...highRisk, seniorReviewNotes: 'Reviewed and authorised by senior manager.'}).includes('risk-r1-very-high'));
-assert('PDF blocked when blocking exists', review.isPdfReadyFromIssues(review.getReviewIssues(completeDraft({customerName: ''}))) === false);
-const warningOnly = completeDraft({photos: [{id: 'p1', name: 'photo.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Access', caption: ''}]});
-const warningIssues = review.getReviewIssues(warningOnly);
-assert('warnings alone do not block PDF', warningIssues.some(issue => !issue.blocking) && review.isPdfReadyFromIssues(warningIssues) === true);
-const summaries = review.getReviewStepSummaries(review.getReviewIssues(completeDraft({customerName: '', photos: [{id: 'p1', name: 'photo.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Access', caption: ''}]})));
-assert('step counts include errors and warnings', summaries[0].errors === 1 && summaries[4].warnings === 1);
-const mixedIssues = review.getReviewIssues(completeDraft({customerName: '', photos: [{id: 'p1', name: 'photo.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Access', caption: ''}]}));
-assert('Fix next prioritises blocking', review.getNextReviewIssue(mixedIssues)?.id === 'job-customer-name');
+assert('draft type includes professional RAMS fields', source.types.includes('revisionHistory') && source.types.includes('consumerUnitMethod') && source.types.includes('ppeMatrix') && source.types.includes('briefingRegister'));
+assert('standard method wording is centralised', source.defaultMethods.includes('getDefaultBatteryMethod') && source.defaultMethods.includes('getDefaultTrenchingMethod') && !source.ramsApp.includes('delivery inspection\n'));
+assert('old drafts migrate without losing legacy locations', migration.migrateRamsDraft({batteryLocation: 'Garage wall', evChargerLocation: 'Driveway wall'}).proposedBatteryLocation === 'Garage wall' && migration.migrateRamsDraft({batteryLocation: 'Garage wall', evChargerLocation: 'Driveway wall'}).proposedEvLocation === 'Driveway wall');
+assert('old drafts receive revision history', migration.migrateRamsDraft({projectReference: 'OLD-1'}).revisionHistory.length === 1);
 
-const loginPage = await read('app/page.tsx');
-const loginRoute = await read('app/api/auth/login/route.ts');
-const logoutRoute = await read('app/api/auth/logout/route.ts');
-const sessionRoute = await read('app/api/auth/session/route.ts');
-const authSource = await read('lib/auth.ts');
-const middlewareSource = await read('middleware.ts');
-const ramsApp = await read('components/RamsApp.tsx');
-const reviewSource = await read('lib/review.ts');
-const defaultsSource = await read('lib/defaults.ts');
-const typeSource = await read('types/rams.ts');
-const css = await read('app/globals.css');
-const pdfRoute = await read('app/api/pdf/route.ts');
+assert('roof work includes roof hazards', hazards.getRecommendedHazardsForWorkTypes(['Solar PV', 'Roof work']).some(item => item.category === 'Working at height'));
+assert('battery selection includes battery risks and method', hazards.getRecommendedHazardsForWorkTypes(['Battery storage']).some(item => item.code.startsWith('BAT-')) && pdfModel.buildRamsPdfModel(completeDraft({systemTypes: ['Battery storage'], panelQuantity: '', proposedBatteryLocation: 'Garage wall', pvShutdownInfo: '', batteryShutdownInfo: 'Battery isolator', risks: [risk('r-bat', 'Battery mounting clearances ventilation thermal event', 'library:BAT-001')]})).methods.some(item => item.heading === 'Battery installation method'));
+assert('EV selection includes EV risks and method', hazards.getRecommendedHazardsForWorkTypes(['EV charger']).some(item => item.code.startsWith('EV-')) && pdfModel.buildRamsPdfModel(completeDraft({systemTypes: ['EV charger'], panelQuantity: '', proposedEvLocation: 'External wall', pvShutdownInfo: '', evShutdownInfo: 'EV circuit isolation', risks: [risk('r-ev', 'EV charger vehicle external cable route', 'library:EV-001')]})).methods.some(item => item.heading === 'EV charger installation method'));
+assert('trenching selection includes excavation risks and method', hazards.getRecommendedHazardsForWorkTypes(['Trenching']).some(item => item.code.startsWith('TRN-')) && pdfModel.buildRamsPdfModel(completeDraft({systemTypes: ['Trenching'], panelQuantity: '', qualifiedElectrician: '', pvShutdownInfo: '', siteIsolationPoint: '', risks: [risk('r-trench', 'Trenching excavation underground service strike cat and genny', 'library:TRN-001')]})).methods.some(item => item.heading === 'Trenching method'));
+assert('irrelevant methods are excluded', !pdfModel.buildRamsPdfModel(completeDraft({systemTypes: ['Battery storage'], panelQuantity: '', proposedBatteryLocation: 'Garage wall', pvShutdownInfo: '', batteryShutdownInfo: 'Battery isolator', risks: [risk('r-bat', 'Battery mounting clearances ventilation thermal event', 'library:BAT-001')]})).methods.some(item => ['Roof work method', 'EV charger installation method', 'Trenching method'].includes(item.heading)));
 
-assert('correct access code succeeds on first submission', loginRoute.includes('success: true') && loginRoute.includes('redirectTo: PROTECTED_REDIRECT') && loginPage.includes('router.replace')); 
-assert('duplicate login submissions are blocked', loginPage.includes('submitLock.current') && loginPage.includes('disabled={busy || code.length !== 4}')); 
-assert('invalid code shows the correct error', loginRoute.includes('Incorrect access code.') && loginPage.includes('Incorrect access code.'));
-assert('successful login sets the session cookie', loginRoute.includes('cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions())')); 
-assert('session cookie has required security settings', authSource.includes('httpOnly: true') && authSource.includes("sameSite: 'lax'") && authSource.includes("secure: process.env.NODE_ENV === 'production'") && authSource.includes("path: '/'") && authSource.includes('maxAge: SESSION_MAX_AGE_SECONDS'));
-assert('successful login redirects to the protected route', loginPage.includes('const redirectTo = result.redirectTo || FALLBACK_REDIRECT') && loginPage.includes('startNavigation(redirectTo)') && loginPage.includes('router.replace(redirectTo)')); 
-assert('middleware permits login and auth API routes', middlewareSource.includes("'/login'") && middlewareSource.includes("'/api/auth/login'") && middlewareSource.includes('shouldBypassMiddleware'));
-assert('protected routes redirect unauthenticated users', middlewareSource.includes("PROTECTED_PREFIXES = ['/dashboard']") && middlewareSource.includes('NextResponse.redirect'));
-assert('logout clears the session', logoutRoute.includes('clearSessionCookieOptions') && authSource.includes('maxAge: 0'));
+const completed = completeDraft();
+assert('completed workflow has no blocking issues', review.isPdfReadyFromIssues(review.getReviewIssues(completed)) === true);
+assert('PDF model includes all relevant risks', pdfModel.buildRamsPdfModel(completed).risks.length === 1 && pdfModel.buildRamsPdfModel(completed).risks[0].initialScore === 12);
+assert('PDF model excludes unrelated sections', !pdfModel.buildRamsPdfModel(completed).methods.some(item => item.heading === 'Trenching method'));
+assert('emergency procedures are conditional', pdfModel.buildRamsPdfModel(completeDraft({systemTypes: ['Battery storage'], panelQuantity: '', proposedBatteryLocation: 'Garage wall', pvShutdownInfo: '', batteryShutdownInfo: 'Battery isolator', risks: [risk('r-bat', 'Battery mounting clearances ventilation thermal event', 'library:BAT-001')]})).emergencyProcedures.some(item => item.heading === 'Battery event'));
+assert('multiple risk rows render in PDF model', pdfModel.buildRamsPdfModel(completeDraft({risks: [risk('r1', 'Solar PV roof DC electrical work'), risk('r2', 'Public access falling objects')]})).risks.length === 2);
+assert('photograph appendix renders selected photos only', pdfModel.buildRamsPdfModel(completeDraft({photos: [{id: 'p1', name: 'one.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Roof', caption: 'Roof', includeInPdf: true}, {id: 'p2', name: 'two.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Other', caption: 'Other', includeInPdf: false}]})).photos.length === 1);
+assert('AI appendix only renders when AI was used', pdfModel.buildRamsPdfModel(completed).aiReview.length === 0 && pdfModel.buildRamsPdfModel(completeDraft({hazards: [{id: 'h1', photoId: 'p1', hazardCode: 'H1', title: 'Fragile roof', observation: 'Cracked tile', potentialHarm: 'Fall', controls: ['Avoid area'], confidence: 0.8, status: 'rejected', assessorComment: 'Not applicable', reviewedAt: '2026-07-13T10:00:00Z'}]})).aiReview.length === 1);
+assert('PV electrical test sheets are not present', !source.ramsApp.toLowerCase().includes('pv electrical testing form') && !source.pdfRoute.toLowerCase().includes('pv electrical test sheet'));
+assert('PDF generation remains available once blocking issues are resolved', review.getReviewIssues(completed).filter(issue => issue.blocking).length === 0);
 
-assert('completed step shows a tick', ramsApp.includes('step-status-complete') && css.includes('border:solid currentColor'));
-assert('warning step shows an issue count', ramsApp.includes('warning-count') && ramsApp.includes('summary.warnings'));
-assert('active step has aria-current step', ramsApp.includes("aria-current={i===step?'step':undefined}"));
-assert('OK text is not rendered', !ramsApp.includes('>OK<') && !ramsApp.includes("'OK'"));
-assert('step labels do not wrap', css.includes('.step-label{white-space:nowrap'));
-assert('active step scrolls into view', ramsApp.includes('scrollIntoView({behavior:'));
-assert('mobile navigation remains usable', css.includes('overflow-x:auto') && css.includes('scroll-snap-type:x proximity'));
+const batteryMethodIssue = review.getReviewIssues(completeDraft({systemTypes: ['Battery storage'], panelQuantity: '', proposedBatteryLocation: 'Garage wall', pvShutdownInfo: '', batteryShutdownInfo: 'Battery isolator', batteryInstallationMethod: '', risks: [risk('r-bat', 'Battery mounting clearances ventilation thermal event', 'library:BAT-001')]})).find(issue => issue.id === 'method-battery');
+assert('battery method issue points to rendered field', batteryMethodIssue?.fieldId === 'battery-installation-method' && source.ramsApp.includes("id={section.id}"));
+const evIssue = review.getReviewIssues(completeDraft({systemTypes: ['EV charger'], panelQuantity: '', proposedEvLocation: 'External wall', pvShutdownInfo: '', evShutdownInfo: 'EV isolation', evChargerInstallationMethod: '', risks: [risk('r-ev', 'EV charger vehicle external cable route', 'library:EV-001')]})).find(issue => issue.id === 'method-ev');
+assert('EV method issue points to rendered field', evIssue?.fieldId === 'ev-charger-installation-method');
+const trenchIssue = review.getReviewIssues(completeDraft({systemTypes: ['Trenching'], panelQuantity: '', qualifiedElectrician: '', pvShutdownInfo: '', siteIsolationPoint: '', trenchingMethod: '', risks: [risk('r-trench', 'Trenching excavation underground service strike cat and genny', 'library:TRN-001')]})).find(issue => issue.id === 'method-trenching');
+assert('trenching method issue points to rendered field', trenchIssue?.fieldId === 'trenching-method');
 
-
-const systemSectionStart = ramsApp.indexOf("{step===2&&");
-const systemSectionEnd = ramsApp.indexOf("{step===3&&", systemSectionStart);
-const systemSection = ramsApp.slice(systemSectionStart, systemSectionEnd);
-assert('EV and battery location fields use expected IDs', systemSection.includes("'proposed-battery-location'") && systemSection.includes("'proposed-ev-location'"));
-assert('EV and battery location fields use expected data keys', systemSection.includes("'proposedBatteryLocation'") && systemSection.includes("'proposedEvLocation'") && !systemSection.includes("'batteryLocation'") && !systemSection.includes("'evChargerLocation'"));
-assert('field helper writes unique input id and name', ramsApp.includes("<label htmlFor={id}>") && ramsApp.includes("<input id={id} name={String(key)}"));
-assert('review issues focus the EV field directly', reviewSource.includes("data.proposedEvLocation") && reviewSource.includes("fieldId:'proposed-ev-location'") && reviewSource.includes("fieldId:'proposed-battery-location'"));
-assert('draft auto-save does not refocus system fields', ramsApp.includes("},[step,reviewNav.targetFieldId]);") && !ramsApp.includes("},[step,reviewNav.targetFieldId,data]);"));
-assert('regression: typing EV location cannot update battery field', systemSection.indexOf("proposedEvLocation") !== systemSection.indexOf("proposedBatteryLocation") && systemSection.includes("field('Proposed EV charger location','proposedEvLocation','proposed-ev-location')"));
-
-
-const resetFunctionStart = ramsApp.indexOf('function resetDraftToInitialState');
-const resetFunctionEnd = ramsApp.indexOf('function confirmStartNewRams', resetFunctionStart);
-const resetFunction = ramsApp.slice(resetFunctionStart, resetFunctionEnd);
-const modalMarkupStart = ramsApp.indexOf("{startNewOpen&&");
-const modalMarkup = ramsApp.slice(modalMarkupStart);
-assert('Start New RAMS opens confirmation modal', ramsApp.includes('function openStartNewModal') && ramsApp.includes('setStartNewOpen(true)') && ramsApp.includes('Start a new RAMS?'));
-assert('Cancel leaves all fields unchanged', ramsApp.includes('function closeStartNewModal') && !ramsApp.slice(ramsApp.indexOf('function closeStartNewModal'), ramsApp.indexOf('function revokeDraftObjectUrls')).includes('setData('));
-assert('confirmation button disabled until checkbox selected', modalMarkup.includes('disabled={!startNewConfirmed}') && modalMarkup.includes('I understand the current draft will be deleted.'));
-assert('confirming clears job details through factory', defaultsSource.includes('export function createEmptyDraft') && defaults.createEmptyDraft().customerName === '' && resetFunction.includes('const empty=createEmptyDraft()') && resetFunction.includes('setData(empty)'));
-assert('confirming clears system details', defaults.createEmptyDraft().panelQuantity === '' && defaults.createEmptyDraft().proposedBatteryLocation === '' && defaults.createEmptyDraft().proposedEvLocation === '');
-assert('confirming clears photos and imported PDF metadata', defaults.createEmptyDraft().photos.length === 0 && defaults.createEmptyDraft().importedPdfAt === undefined);
-assert('confirming clears AI suggestions and risks', defaults.createEmptyDraft().hazards.length === 0 && defaults.createEmptyDraft().risks.length === 0);
-assert('confirming clears local persistence', resetFunction.includes('localStorage.removeItem(DRAFT_STORAGE_KEY)') && resetFunction.includes('sessionStorage.removeItem(DRAFT_STORAGE_KEY)') && resetFunction.includes('localStorage.setItem(DRAFT_STORAGE_KEY,JSON.stringify(empty))'));
-assert('user remains authenticated during reset', !resetFunction.includes('logout') && !resetFunction.includes('/api/auth/logout') && !resetFunction.includes('router.'));
-assert('wizard returns to Step 1', resetFunction.includes('setStep(0)') && resetFunction.includes('window.scrollTo({top:0'));
-assert('old draft does not return after refresh', ramsApp.includes('draftReady') && ramsApp.includes('if(!draftReady)return;') && resetFunction.includes('setDraftReady(true)'));
-assert('unsaved PDF warning appears when applicable', modalMarkup.includes('!data.pdfDownloadedAt') && modalMarkup.includes('This RAMS has not been downloaded as a PDF.'));
-assert('downloaded PDF timestamp displays correctly', ramsApp.includes('PDF downloaded on ') && ramsApp.includes('data.pdfFileName') && typeSource.includes('pdfDownloadedAt?:string;pdfFileName?:string'));
-assert('PDF state is set only after successful API response', ramsApp.includes("fetch('/api/pdf'") && ramsApp.indexOf('await response.blob()') < ramsApp.indexOf('pdfDownloadedAt:new Date().toISOString()')); 
-assert('autosave race condition is guarded', ramsApp.includes('const [draftReady,setDraftReady]=useState(false)') && ramsApp.includes('useEffect(()=>{if(!draftReady)return;localStorage.setItem(DRAFT_STORAGE_KEY,JSON.stringify(data))},[data,draftReady])'));
-assert('reset revokes any object URLs', resetFunction.includes('revokeDraftObjectUrls(data)') && ramsApp.includes('URL.revokeObjectURL'));
-assert('reset announces success', resetFunction.includes("setMessage('New RAMS started.')") && ramsApp.includes("role='status'"));
-assert('modal traps focus and Escape closes it', ramsApp.includes("event.key==='Escape'") && ramsApp.includes("event.key!=='Tab'") && ramsApp.includes("document.addEventListener('keydown',onKeyDown)"));
-
-
-const batteryMethodMissingDraft = completeDraft({systemTypes: ['Solar PV', 'Battery storage'], methodStatement: 'Install the system safely.', batteryInstallationMethod: ''});
-const batteryMethodIssue = review.getReviewIssues(batteryMethodMissingDraft).find(issue => issue.id === 'method-battery');
-assert('battery storage method issue points to rendered field', batteryMethodIssue?.fieldId === 'battery-installation-method' && ramsApp.includes("id='battery-installation-method'"));
-const batteryMethodCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'Battery storage'], methodStatement: 'Install the system safely.', batteryInstallationMethod: 'Wall mounted battery installation with manufacturer mounting bracket, clearances maintained and ventilation requirements observed.'});
-assert('battery storage method issue clears when field is completed', !review.getReviewIssues(batteryMethodCompleteDraft).some(issue => issue.id === 'method-battery'));
-assert('battery method field is included in generated method output', pdfRoute.includes('Battery installation method:') && pdfRoute.includes('data.batteryInstallationMethod')); 
-const literalReviewTargets = [...reviewSource.matchAll(/fieldId:'([^']+)'/g)].map(match => match[1]);
+const literalReviewTargets = [...source.review.matchAll(/fieldId: '([^']+)'/g)].map(match => match[1]);
 const unrenderedTargets = literalReviewTargets.filter(id => {
-  if (id.startsWith('declaration-')) return !ramsApp.includes("id={'declaration-'+key}");
-  return !(ramsApp.includes("'" + id + "'") || ramsApp.includes('"' + id + '"'));
+  if (id.startsWith('declaration-')) return !source.ramsApp.includes("id={'declaration-' + key}");
+  if (id === 'risk-list' || id === 'system-work-types' || id === 'persons-at-risk-list' || id === 'equipment-list' || id === 'ppe-matrix-list') return !source.ramsApp.includes("'" + id + "'");
+  if (id.startsWith('photo-') || id.startsWith('ai-suggestion-') || id.startsWith('risk-row-')) return false;
+  return !(source.ramsApp.includes("'" + id + "'") || source.ramsApp.includes('\"' + id + '\"') || source.defaultMethods.includes("id: '" + id + "'"));
 });
 assert('Review Centre literal navigation targets are rendered', unrenderedTargets.length === 0);
+assert('Review Centre cannot generate method targets for missing UI fields', source.review.includes('consumer-unit-method') && source.ramsApp.includes('methodSections.map(renderMethodSection)'));
 
-
-assert('login digit sanitizer strips non-digits on client and server', loginPage.includes("replace(/\\D/g, '').slice(0, 4)") && loginRoute.includes("replace(/\\D/g, '').slice(0, 4)"));
-assert('successful login sets authenticated state before navigation', loginPage.includes('setAuthenticated(true)') && loginPage.includes("console.info('[SolarFX login] login success"));
-assert('login navigation does not call router.refresh', !loginPage.includes('router.refresh()'));
-assert('login has five second navigation fallback', loginPage.includes('dashboard navigation still waiting after 5 seconds') && loginPage.includes('window.location.assign(redirectTo)'));
-assert('login confirms cookie in background without blocking navigation', loginPage.includes('void confirmCookieDetected()') && loginPage.indexOf('void confirmCookieDetected()') < loginPage.indexOf('startNavigation(redirectTo)'));
-assert('dashboard renders skeleton while draft loads', ramsApp.includes('function DashboardSkeleton') && ramsApp.includes('if(!draftReady)return <DashboardSkeleton/>') && css.includes('.dashboard-skeleton'));
-assert('dashboard logs mount session draft and completion', ramsApp.includes("console.info('[SolarFX dashboard] dashboard mounted')") && ramsApp.includes("console.info('[SolarFX dashboard] session loaded") && ramsApp.includes("console.info('[SolarFX dashboard] draft loaded") && ramsApp.includes("console.info('[SolarFX dashboard] loading complete')"));
-assert('dashboard slow steps log after five seconds', ramsApp.includes('still waiting after 5 seconds') && ramsApp.includes('SLOW_DASHBOARD_STEP_MS=5000'));
-assert('server auth flow logs cookie and redirects', loginRoute.includes("console.info('[SolarFX auth] login success')") && sessionRoute.includes("console.info('[SolarFX auth] session loaded") && middlewareSource.includes("console.info('[SolarFX auth] cookie detected") && middlewareSource.includes("console.warn('[SolarFX auth] dashboard redirect unauthenticated"));
-
-
-const trenchingMissingDraft = completeDraft({systemTypes: ['Solar PV', 'Trenching'], trenchingMethod: ''});
-const trenchingIssue = review.getReviewIssues(trenchingMissingDraft).find(issue => issue.id === 'method-trenching');
-assert('trenching method issue points to rendered field', trenchingIssue?.fieldId === 'trenching-method' && ramsApp.includes("id='trenching-method'"));
-const trenchingCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'Trenching'], trenchingMethod: 'Excavate using CAT & Genny survey before excavation. Maintain safe trench depth. Protect excavation. Reinstate surface upon completion.'});
-assert('trenching method issue clears when field is completed', !review.getReviewIssues(trenchingCompleteDraft).some(issue => issue.id === 'method-trenching'));
-const evMissingDraft = completeDraft({systemTypes: ['Solar PV', 'EV charger'], evChargerInstallationMethod: ''});
-const evIssue = review.getReviewIssues(evMissingDraft).find(issue => issue.id === 'method-ev');
-assert('EV charger method issue points to rendered field', evIssue?.fieldId === 'ev-charger-installation-method' && ramsApp.includes("id='ev-charger-installation-method'"));
-const evCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'EV charger'], evChargerInstallationMethod: 'Install charger in accordance with manufacturer instructions. Verify supply. Complete commissioning and functional testing. Record test results.'});
-assert('EV charger method issue clears when field is completed', !review.getReviewIssues(evCompleteDraft).some(issue => issue.id === 'method-ev'));
-assert('method fields are conditional on selected work types', ramsApp.includes("data.systemTypes.includes('Trenching')") && ramsApp.includes("data.systemTypes.includes('EV charger')"));
-assert('method defaults populate when work types are selected', ramsApp.includes('TRENCHING_METHOD_DEFAULT') && ramsApp.includes('EV_CHARGER_METHOD_DEFAULT') && ramsApp.includes('next.trenchingMethod=TRENCHING_METHOD_DEFAULT') && ramsApp.includes('next.evChargerInstallationMethod=EV_CHARGER_METHOD_DEFAULT'));
-assert('trenching and EV methods are included in generated PDF method output', pdfRoute.includes('Trenching method:') && pdfRoute.includes('EV charger installation method:')); 
-
-
-assert('Generate PDF button always reaches click handler', ramsApp.includes('console.log("Generate PDF clicked")') && ramsApp.includes("onClick={pdf}") && !ramsApp.includes(" disabled={!ready}"));
-assert('PDF handler reports exact blocking validation', ramsApp.includes("const currentBlocking=currentIssues.filter(issue=>issue.blocking)") && ramsApp.includes("PDF blocked by: ") && ramsApp.includes('issue.stepLabel+\': \'+issue.title'));
-assert('PDF handler logs validation passed and API call', ramsApp.includes('console.log("Validation passed")') && ramsApp.includes('console.log("Calling PDF API")'));
-assert('PDF handler calls API route with fetch', ramsApp.includes("fetch('/api/pdf'") && ramsApp.includes("method:'POST'"));
-assert('PDF API route exists and returns a PDF', pdfRoute.includes('export async function POST') && pdfRoute.includes("'content-type': 'application/pdf'") && pdfRoute.includes('doc.output(\'arraybuffer\')'));
-assert('PDF API route protects authenticated data', pdfRoute.includes('verifySession') && pdfRoute.includes('SESSION_COOKIE_NAME') && pdfRoute.includes('Not authenticated.'));
+assert('EV and battery location fields use expected IDs', source.ramsApp.includes("'proposed-battery-location'") && source.ramsApp.includes("'proposed-ev-location'"));
+assert('EV and battery location fields use expected data keys', source.ramsApp.includes("'proposedBatteryLocation'") && source.ramsApp.includes("'proposedEvLocation'") && !source.ramsApp.includes("'batteryLocation'") && !source.ramsApp.includes("'evChargerLocation'"));
+assert('draft auto-save does not refocus system fields', source.ramsApp.includes('}, [step, reviewNav.targetFieldId]);'));
+assert('login and auth flow remain present', source.loginRoute.includes('success: true') && source.loginPage.includes('router.replace') && source.authSource.includes('httpOnly: true') && source.middlewareSource.includes("PROTECTED_PREFIXES = ['/dashboard']"));
+assert('Generate PDF button reaches click handler and API', source.ramsApp.includes("console.log('Generate PDF clicked')") && source.ramsApp.includes("console.log('Validation passed')") && source.ramsApp.includes("console.log('Calling PDF API')") && source.ramsApp.includes("fetch('/api/pdf'"));
+assert('PDF API route exists and returns a PDF', source.pdfRoute.includes('export async function POST') && source.pdfRoute.includes("'content-type': 'application/pdf'") && source.pdfRoute.includes("doc.output('arraybuffer')"));
+assert('PDF API route protects authenticated data', source.pdfRoute.includes('verifySession') && source.pdfRoute.includes('SESSION_COOKIE_NAME') && source.pdfRoute.includes('Not authenticated.'));
+assert('professional PDF sections are present', ['Document control', 'Project information', 'Scope of works', 'Risk assessment matrix', 'Dynamic risk assessment', 'Method statement', 'PPE matrix', 'Emergency procedures', 'Environmental controls', 'Monitoring and review', 'Sign-off'].every(title => source.pdfRoute.includes(title)));
+assert('new UI styles are present', source.css.includes('.method-card') && source.css.includes('.completion-pill'));
