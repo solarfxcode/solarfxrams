@@ -8,7 +8,7 @@ const SIGN_IN_ERROR_MESSAGE = 'Unable to sign in. Please try again.';
 type LoginBody = {code?: unknown};
 
 function normaliseCode(value: unknown) {
-  return String(value ?? '').replace(/D/g, '').slice(0, 4);
+  return String(value ?? '').replace(/\D/g, '').slice(0, 4);
 }
 
 export async function POST(req: Request) {
@@ -40,6 +40,7 @@ export async function POST(req: Request) {
   }
 
   attempts.delete(ip);
+  console.info('[SolarFX auth] login success');
   const token = await createSession();
   const res = NextResponse.json({success: true, redirectTo: PROTECTED_REDIRECT});
   res.cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions());

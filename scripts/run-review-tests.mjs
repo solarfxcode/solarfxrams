@@ -102,6 +102,7 @@ assert('Fix next prioritises blocking', review.getNextReviewIssue(mixedIssues)?.
 const loginPage = await read('app/page.tsx');
 const loginRoute = await read('app/api/auth/login/route.ts');
 const logoutRoute = await read('app/api/auth/logout/route.ts');
+const sessionRoute = await read('app/api/auth/session/route.ts');
 const authSource = await read('lib/auth.ts');
 const middlewareSource = await read('middleware.ts');
 const ramsApp = await read('components/RamsApp.tsx');
@@ -115,7 +116,7 @@ assert('duplicate login submissions are blocked', loginPage.includes('submitLock
 assert('invalid code shows the correct error', loginRoute.includes('Incorrect access code.') && loginPage.includes('Incorrect access code.'));
 assert('successful login sets the session cookie', loginRoute.includes('cookies.set(SESSION_COOKIE_NAME, token, sessionCookieOptions())')); 
 assert('session cookie has required security settings', authSource.includes('httpOnly: true') && authSource.includes("sameSite: 'lax'") && authSource.includes("secure: process.env.NODE_ENV === 'production'") && authSource.includes("path: '/'") && authSource.includes('maxAge: SESSION_MAX_AGE_SECONDS'));
-assert('successful login redirects to the protected route', loginPage.includes('router.replace(result.redirectTo || FALLBACK_REDIRECT)'));
+assert('successful login redirects to the protected route', loginPage.includes('const redirectTo = result.redirectTo || FALLBACK_REDIRECT') && loginPage.includes('startNavigation(redirectTo)') && loginPage.includes('router.replace(redirectTo)')); 
 assert('middleware permits login and auth API routes', middlewareSource.includes("'/login'") && middlewareSource.includes("'/api/auth/login'") && middlewareSource.includes('shouldBypassMiddleware'));
 assert('protected routes redirect unauthenticated users', middlewareSource.includes("PROTECTED_PREFIXES = ['/dashboard']") && middlewareSource.includes('NextResponse.redirect'));
 assert('logout clears the session', logoutRoute.includes('clearSessionCookieOptions') && authSource.includes('maxAge: 0'));
@@ -177,3 +178,14 @@ const unrenderedTargets = literalReviewTargets.filter(id => {
   return !(ramsApp.includes("'" + id + "'") || ramsApp.includes('"' + id + '"'));
 });
 assert('Review Centre literal navigation targets are rendered', unrenderedTargets.length === 0);
+
+
+assert('login digit sanitizer strips non-digits on client and server', loginPage.includes("replace(/\\D/g, '').slice(0, 4)") && loginRoute.includes("replace(/\\D/g, '').slice(0, 4)"));
+assert('successful login sets authenticated state before navigation', loginPage.includes('setAuthenticated(true)') && loginPage.includes("console.info('[SolarFX login] login success"));
+assert('login navigation does not call router.refresh', !loginPage.includes('router.refresh()'));
+assert('login has five second navigation fallback', loginPage.includes('dashboard navigation still waiting after 5 seconds') && loginPage.includes('window.location.assign(redirectTo)'));
+assert('login confirms cookie in background without blocking navigation', loginPage.includes('void confirmCookieDetected()') && loginPage.indexOf('void confirmCookieDetected()') < loginPage.indexOf('startNavigation(redirectTo)'));
+assert('dashboard renders skeleton while draft loads', ramsApp.includes('function DashboardSkeleton') && ramsApp.includes('if(!draftReady)return <DashboardSkeleton/>') && css.includes('.dashboard-skeleton'));
+assert('dashboard logs mount session draft and completion', ramsApp.includes("console.info('[SolarFX dashboard] dashboard mounted')") && ramsApp.includes("console.info('[SolarFX dashboard] session loaded") && ramsApp.includes("console.info('[SolarFX dashboard] draft loaded") && ramsApp.includes("console.info('[SolarFX dashboard] loading complete')"));
+assert('dashboard slow steps log after five seconds', ramsApp.includes('still waiting after 5 seconds') && ramsApp.includes('SLOW_DASHBOARD_STEP_MS=5000'));
+assert('server auth flow logs cookie and redirects', loginRoute.includes("console.info('[SolarFX auth] login success')") && sessionRoute.includes("console.info('[SolarFX auth] session loaded") && middlewareSource.includes("console.info('[SolarFX auth] cookie detected") && middlewareSource.includes("console.warn('[SolarFX auth] dashboard redirect unauthenticated"));

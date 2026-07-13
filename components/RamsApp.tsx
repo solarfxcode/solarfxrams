@@ -15,6 +15,9 @@ const score=(s:number,l:number)=>Number(s||0)*Number(l||0);
 const riskName=(n:number)=>n<=0?'Not scored':n<=5?'Low':n<=10?'Medium':n<=15?'High':'Very High';
 const severityIcon=(severity:string)=>severity==='error'?'!':severity==='warning'?'?':'i';
 const categoryLabel=(issue:ReviewIssue)=>issue.stepLabel;
+const SLOW_DASHBOARD_STEP_MS=5000;
+function logDashboardSlowStep(label:string){return window.setTimeout(()=>console.warn('[SolarFX dashboard] '+label+' still waiting after 5 seconds'),SLOW_DASHBOARD_STEP_MS)}
+function DashboardSkeleton(){return <><header className='header'><div className='header-inner'><div className='brand'><img src='/branding/solarfx-logo-horizontal.png' alt='SolarFX'/><strong>RAMS Generator</strong></div></div></header><main className='shell app-shell'><section className='dashboard-skeleton' aria-busy='true' aria-live='polite'><span className='skeleton-spinner' aria-hidden='true'/><div><h1>Opening RAMS Generator</h1><p className='muted'>Loading your saved draft on this device.</p></div></section></main></>}
 
 export default function RamsApp(){
   const router=useRouter();
@@ -30,7 +33,8 @@ export default function RamsApp(){
   const lastStartNewTriggerRef=useRef<HTMLButtonElement|null>(null);
   const modalCancelRef=useRef<HTMLButtonElement|null>(null);
 
-  useEffect(()=>{const saved=localStorage.getItem(DRAFT_STORAGE_KEY);if(saved)try{setData(normaliseDraft(JSON.parse(saved)))}catch{}setDraftReady(true)},[]);
+  useEffect(()=>{console.info('[SolarFX dashboard] dashboard mounted');const slowSession=logDashboardSlowStep('session load');fetch('/api/auth/session',{cache:'no-store'}).then(res=>res.json()).then(session=>console.info('[SolarFX dashboard] session loaded',{authenticated:Boolean(session.ok||session.authenticated)})).catch(error=>console.warn('[SolarFX dashboard] session load failed',error)).finally(()=>window.clearTimeout(slowSession))},[]);
+  useEffect(()=>{const slowDraft=logDashboardSlowStep('draft load');try{const saved=localStorage.getItem(DRAFT_STORAGE_KEY);if(saved)setData(normaliseDraft(JSON.parse(saved)));console.info('[SolarFX dashboard] draft loaded',{hasDraft:Boolean(saved)})}catch(error){console.warn('[SolarFX dashboard] draft load failed',error)}finally{setDraftReady(true);console.info('[SolarFX dashboard] loading complete');window.clearTimeout(slowDraft)}},[]);
   useEffect(()=>{if(!draftReady)return;localStorage.setItem(DRAFT_STORAGE_KEY,JSON.stringify(data))},[data,draftReady]);
 
   const issues=useMemo(()=>getReviewIssues(data),[data]);
@@ -86,6 +90,8 @@ export default function RamsApp(){
   const riskNumber=(risk:RiskRow,key:'severity'|'likelihood'|'residualSeverity'|'residualLikelihood',label:string)=><div className='field'><label htmlFor={'field-'+key+'-'+risk.id}>{label}</label><select id={'field-'+key+'-'+risk.id} value={risk[key]||0} onChange={e=>updateRisk(risk.id,{[key]:Number(e.target.value)} as Partial<RiskRow>)}>{riskScale.map(n=><option key={n} value={n}>{n===0?'Select':n}</option>)}</select></div>;
 
   const fixingTitle=reviewNav.targetIssueTitle||issues.find(issue=>issue.id===reviewNav.targetIssueId)?.title||'Review item';
+
+  if(!draftReady)return <DashboardSkeleton/>;
 
   return <>
     <header className='header'><div className='header-inner'><div className='brand'><img src='/branding/solarfx-logo-horizontal.png' alt='SolarFX'/><strong>RAMS Generator</strong></div><div className='header-actions'><button type='button' className='btn secondary start-new-button' onClick={openStartNewModal}>Start new RAMS</button><button className='btn secondary header-logout' onClick={logout}>Log out</button></div></div></header>

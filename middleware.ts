@@ -22,9 +22,15 @@ export async function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const authenticated = await verifySession(req.cookies.get(SESSION_COOKIE_NAME)?.value);
-  if (authenticated) return NextResponse.next();
+  const sessionCookie = req.cookies.get(SESSION_COOKIE_NAME)?.value;
+  if (sessionCookie) console.info('[SolarFX auth] cookie detected', {pathname});
+  const authenticated = await verifySession(sessionCookie);
+  if (authenticated) {
+    console.info('[SolarFX auth] dashboard allowed', {pathname});
+    return NextResponse.next();
+  }
 
+  console.warn('[SolarFX auth] dashboard redirect unauthenticated', {pathname});
   const loginUrl = new URL(LOGIN_PATH, req.url);
   loginUrl.searchParams.set('next', pathname);
   return NextResponse.redirect(loginUrl);
