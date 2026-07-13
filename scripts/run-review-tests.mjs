@@ -50,8 +50,8 @@ function completeDraft(overrides = {}) {
     panelModel: 'PV-400',
     inverterModel: 'INV-5',
     batteryModel: '',
-    batteryLocation: '',
-    evChargerLocation: '',
+    proposedBatteryLocation: '',
+    proposedEvLocation: '',
     roofType: '',
     roofCondition: '',
     accessNotes: '',
@@ -101,6 +101,7 @@ const logoutRoute = await read('app/api/auth/logout/route.ts');
 const authSource = await read('lib/auth.ts');
 const middlewareSource = await read('middleware.ts');
 const ramsApp = await read('components/RamsApp.tsx');
+const reviewSource = await read('lib/review.ts');
 const css = await read('app/globals.css');
 
 assert('correct access code succeeds on first submission', loginRoute.includes('success: true') && loginRoute.includes('redirectTo: PROTECTED_REDIRECT') && loginPage.includes('router.replace')); 
@@ -120,3 +121,14 @@ assert('OK text is not rendered', !ramsApp.includes('>OK<') && !ramsApp.includes
 assert('step labels do not wrap', css.includes('.step-label{white-space:nowrap'));
 assert('active step scrolls into view', ramsApp.includes('scrollIntoView({behavior:'));
 assert('mobile navigation remains usable', css.includes('overflow-x:auto') && css.includes('scroll-snap-type:x proximity'));
+
+
+const systemSectionStart = ramsApp.indexOf("{step===2&&");
+const systemSectionEnd = ramsApp.indexOf("{step===3&&", systemSectionStart);
+const systemSection = ramsApp.slice(systemSectionStart, systemSectionEnd);
+assert('EV and battery location fields use expected IDs', systemSection.includes("'proposed-battery-location'") && systemSection.includes("'proposed-ev-location'"));
+assert('EV and battery location fields use expected data keys', systemSection.includes("'proposedBatteryLocation'") && systemSection.includes("'proposedEvLocation'") && !systemSection.includes("'batteryLocation'") && !systemSection.includes("'evChargerLocation'"));
+assert('field helper writes unique input id and name', ramsApp.includes("<label htmlFor={id}>") && ramsApp.includes("<input id={id} name={String(key)}"));
+assert('review issues focus the EV field directly', reviewSource.includes("data.proposedEvLocation") && reviewSource.includes("fieldId:'proposed-ev-location'") && reviewSource.includes("fieldId:'proposed-battery-location'"));
+assert('draft auto-save does not refocus system fields', ramsApp.includes("},[step,reviewNav.targetFieldId]);") && !ramsApp.includes("},[step,reviewNav.targetFieldId,data]);"));
+assert('regression: typing EV location cannot update battery field', systemSection.indexOf("proposedEvLocation") !== systemSection.indexOf("proposedBatteryLocation") && systemSection.includes("field('Proposed EV charger location','proposedEvLocation','proposed-ev-location')"));
