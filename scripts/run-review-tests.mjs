@@ -163,3 +163,17 @@ assert('autosave race condition is guarded', ramsApp.includes('const [draftReady
 assert('reset revokes any object URLs', resetFunction.includes('revokeDraftObjectUrls(data)') && ramsApp.includes('URL.revokeObjectURL'));
 assert('reset announces success', resetFunction.includes("setMessage('New RAMS started.')") && ramsApp.includes("role='status'"));
 assert('modal traps focus and Escape closes it', ramsApp.includes("event.key==='Escape'") && ramsApp.includes("event.key!=='Tab'") && ramsApp.includes("document.addEventListener('keydown',onKeyDown)"));
+
+
+const batteryMethodMissingDraft = completeDraft({systemTypes: ['Solar PV', 'Battery storage'], methodStatement: 'Install the system safely.', batteryInstallationMethod: ''});
+const batteryMethodIssue = review.getReviewIssues(batteryMethodMissingDraft).find(issue => issue.id === 'method-battery');
+assert('battery storage method issue points to rendered field', batteryMethodIssue?.fieldId === 'battery-installation-method' && ramsApp.includes("id='battery-installation-method'"));
+const batteryMethodCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'Battery storage'], methodStatement: 'Install the system safely.', batteryInstallationMethod: 'Wall mounted battery installation with manufacturer mounting bracket, clearances maintained and ventilation requirements observed.'});
+assert('battery storage method issue clears when field is completed', !review.getReviewIssues(batteryMethodCompleteDraft).some(issue => issue.id === 'method-battery'));
+assert('battery method field is included in generated method output', ramsApp.includes('Battery installation method:') && ramsApp.includes('data.batteryInstallationMethod'));
+const literalReviewTargets = [...reviewSource.matchAll(/fieldId:'([^']+)'/g)].map(match => match[1]);
+const unrenderedTargets = literalReviewTargets.filter(id => {
+  if (id.startsWith('declaration-')) return !ramsApp.includes("id={'declaration-'+key}");
+  return !(ramsApp.includes("'" + id + "'") || ramsApp.includes('"' + id + '"'));
+});
+assert('Review Centre literal navigation targets are rendered', unrenderedTargets.length === 0);
