@@ -110,6 +110,7 @@ const reviewSource = await read('lib/review.ts');
 const defaultsSource = await read('lib/defaults.ts');
 const typeSource = await read('types/rams.ts');
 const css = await read('app/globals.css');
+const pdfRoute = await read('app/api/pdf/route.ts');
 
 assert('correct access code succeeds on first submission', loginRoute.includes('success: true') && loginRoute.includes('redirectTo: PROTECTED_REDIRECT') && loginPage.includes('router.replace')); 
 assert('duplicate login submissions are blocked', loginPage.includes('submitLock.current') && loginPage.includes('disabled={busy || code.length !== 4}')); 
@@ -159,7 +160,7 @@ assert('wizard returns to Step 1', resetFunction.includes('setStep(0)') && reset
 assert('old draft does not return after refresh', ramsApp.includes('draftReady') && ramsApp.includes('if(!draftReady)return;') && resetFunction.includes('setDraftReady(true)'));
 assert('unsaved PDF warning appears when applicable', modalMarkup.includes('!data.pdfDownloadedAt') && modalMarkup.includes('This RAMS has not been downloaded as a PDF.'));
 assert('downloaded PDF timestamp displays correctly', ramsApp.includes('PDF downloaded on ') && ramsApp.includes('data.pdfFileName') && typeSource.includes('pdfDownloadedAt?:string;pdfFileName?:string'));
-assert('PDF state is set only after save is initiated', ramsApp.indexOf('doc.save(pdfFileName)') < ramsApp.indexOf('pdfDownloadedAt:new Date().toISOString()'));
+assert('PDF state is set only after successful API response', ramsApp.includes("fetch('/api/pdf'") && ramsApp.indexOf('await response.blob()') < ramsApp.indexOf('pdfDownloadedAt:new Date().toISOString()')); 
 assert('autosave race condition is guarded', ramsApp.includes('const [draftReady,setDraftReady]=useState(false)') && ramsApp.includes('useEffect(()=>{if(!draftReady)return;localStorage.setItem(DRAFT_STORAGE_KEY,JSON.stringify(data))},[data,draftReady])'));
 assert('reset revokes any object URLs', resetFunction.includes('revokeDraftObjectUrls(data)') && ramsApp.includes('URL.revokeObjectURL'));
 assert('reset announces success', resetFunction.includes("setMessage('New RAMS started.')") && ramsApp.includes("role='status'"));
@@ -171,7 +172,7 @@ const batteryMethodIssue = review.getReviewIssues(batteryMethodMissingDraft).fin
 assert('battery storage method issue points to rendered field', batteryMethodIssue?.fieldId === 'battery-installation-method' && ramsApp.includes("id='battery-installation-method'"));
 const batteryMethodCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'Battery storage'], methodStatement: 'Install the system safely.', batteryInstallationMethod: 'Wall mounted battery installation with manufacturer mounting bracket, clearances maintained and ventilation requirements observed.'});
 assert('battery storage method issue clears when field is completed', !review.getReviewIssues(batteryMethodCompleteDraft).some(issue => issue.id === 'method-battery'));
-assert('battery method field is included in generated method output', ramsApp.includes('Battery installation method:') && ramsApp.includes('data.batteryInstallationMethod'));
+assert('battery method field is included in generated method output', pdfRoute.includes('Battery installation method:') && pdfRoute.includes('data.batteryInstallationMethod')); 
 const literalReviewTargets = [...reviewSource.matchAll(/fieldId:'([^']+)'/g)].map(match => match[1]);
 const unrenderedTargets = literalReviewTargets.filter(id => {
   if (id.startsWith('declaration-')) return !ramsApp.includes("id={'declaration-'+key}");
@@ -203,4 +204,12 @@ const evCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'EV charger'], 
 assert('EV charger method issue clears when field is completed', !review.getReviewIssues(evCompleteDraft).some(issue => issue.id === 'method-ev'));
 assert('method fields are conditional on selected work types', ramsApp.includes("data.systemTypes.includes('Trenching')") && ramsApp.includes("data.systemTypes.includes('EV charger')"));
 assert('method defaults populate when work types are selected', ramsApp.includes('TRENCHING_METHOD_DEFAULT') && ramsApp.includes('EV_CHARGER_METHOD_DEFAULT') && ramsApp.includes('next.trenchingMethod=TRENCHING_METHOD_DEFAULT') && ramsApp.includes('next.evChargerInstallationMethod=EV_CHARGER_METHOD_DEFAULT'));
-assert('trenching and EV methods are included in generated PDF method output', ramsApp.includes('Trenching method:') && ramsApp.includes('EV charger installation method:'));
+assert('trenching and EV methods are included in generated PDF method output', pdfRoute.includes('Trenching method:') && pdfRoute.includes('EV charger installation method:')); 
+
+
+assert('Generate PDF button always reaches click handler', ramsApp.includes('console.log("Generate PDF clicked")') && ramsApp.includes("onClick={pdf}") && !ramsApp.includes(" disabled={!ready}"));
+assert('PDF handler reports exact blocking validation', ramsApp.includes("const currentBlocking=currentIssues.filter(issue=>issue.blocking)") && ramsApp.includes("PDF blocked by: ") && ramsApp.includes('issue.stepLabel+\': \'+issue.title'));
+assert('PDF handler logs validation passed and API call', ramsApp.includes('console.log("Validation passed")') && ramsApp.includes('console.log("Calling PDF API")'));
+assert('PDF handler calls API route with fetch', ramsApp.includes("fetch('/api/pdf'") && ramsApp.includes("method:'POST'"));
+assert('PDF API route exists and returns a PDF', pdfRoute.includes('export async function POST') && pdfRoute.includes("'content-type': 'application/pdf'") && pdfRoute.includes('doc.output(\'arraybuffer\')'));
+assert('PDF API route protects authenticated data', pdfRoute.includes('verifySession') && pdfRoute.includes('SESSION_COOKIE_NAME') && pdfRoute.includes('Not authenticated.'));
