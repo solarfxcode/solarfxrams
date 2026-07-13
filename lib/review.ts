@@ -1,6 +1,6 @@
 import type {RamsData,ReviewIssue,ReviewIssueCategory,ReviewIssueSeverity} from '@/types/rams';
 
-export const REVIEW_STEP_LABELS=['Job','Import PDF','System','Site','Photos','AI hazards','Risk assessment','Method','Emergency','Review & PDF'] as const;
+export const REVIEW_STEP_LABELS=['Job','Import','System','Site','Photos','AI hazards','Risk','Method','Emergency','Review & PDF'] as const;
 export const REQUIRED_DECLARATIONS=[
   ['siteReviewed','Site details and conditions have been reviewed.'],
   ['importVerified','Imported PDF information has been verified.'],

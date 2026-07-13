@@ -5,4 +5,4 @@ export type RamsData={projectReference:string;customerName:string;address:string
 export type ReviewIssueSeverity='error'|'warning'|'info';
 export type ReviewIssueCategory='job'|'import'|'system'|'site'|'photos'|'ai'|'risk'|'method'|'emergency'|'declarations';
 export type ReviewIssue={id:string;severity:ReviewIssueSeverity;category:ReviewIssueCategory;step:number;stepLabel:string;title:string;description:string;blocking:boolean;fieldId?:string;entityId?:string;photoId?:string;riskId?:string;actionLabel:string};
-export type ReviewNavigationState={returnStep?:number;targetIssueId?:string;targetFieldId?:string};
+export type ReviewNavigationState={returnStep?:number;targetIssueId?:string;targetFieldId?:string;targetIssueTitle?:string};
