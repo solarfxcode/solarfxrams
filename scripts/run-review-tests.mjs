@@ -189,3 +189,18 @@ assert('dashboard renders skeleton while draft loads', ramsApp.includes('functio
 assert('dashboard logs mount session draft and completion', ramsApp.includes("console.info('[SolarFX dashboard] dashboard mounted')") && ramsApp.includes("console.info('[SolarFX dashboard] session loaded") && ramsApp.includes("console.info('[SolarFX dashboard] draft loaded") && ramsApp.includes("console.info('[SolarFX dashboard] loading complete')"));
 assert('dashboard slow steps log after five seconds', ramsApp.includes('still waiting after 5 seconds') && ramsApp.includes('SLOW_DASHBOARD_STEP_MS=5000'));
 assert('server auth flow logs cookie and redirects', loginRoute.includes("console.info('[SolarFX auth] login success')") && sessionRoute.includes("console.info('[SolarFX auth] session loaded") && middlewareSource.includes("console.info('[SolarFX auth] cookie detected") && middlewareSource.includes("console.warn('[SolarFX auth] dashboard redirect unauthenticated"));
+
+
+const trenchingMissingDraft = completeDraft({systemTypes: ['Solar PV', 'Trenching'], trenchingMethod: ''});
+const trenchingIssue = review.getReviewIssues(trenchingMissingDraft).find(issue => issue.id === 'method-trenching');
+assert('trenching method issue points to rendered field', trenchingIssue?.fieldId === 'trenching-method' && ramsApp.includes("id='trenching-method'"));
+const trenchingCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'Trenching'], trenchingMethod: 'Excavate using CAT & Genny survey before excavation. Maintain safe trench depth. Protect excavation. Reinstate surface upon completion.'});
+assert('trenching method issue clears when field is completed', !review.getReviewIssues(trenchingCompleteDraft).some(issue => issue.id === 'method-trenching'));
+const evMissingDraft = completeDraft({systemTypes: ['Solar PV', 'EV charger'], evChargerInstallationMethod: ''});
+const evIssue = review.getReviewIssues(evMissingDraft).find(issue => issue.id === 'method-ev');
+assert('EV charger method issue points to rendered field', evIssue?.fieldId === 'ev-charger-installation-method' && ramsApp.includes("id='ev-charger-installation-method'"));
+const evCompleteDraft = completeDraft({systemTypes: ['Solar PV', 'EV charger'], evChargerInstallationMethod: 'Install charger in accordance with manufacturer instructions. Verify supply. Complete commissioning and functional testing. Record test results.'});
+assert('EV charger method issue clears when field is completed', !review.getReviewIssues(evCompleteDraft).some(issue => issue.id === 'method-ev'));
+assert('method fields are conditional on selected work types', ramsApp.includes("data.systemTypes.includes('Trenching')") && ramsApp.includes("data.systemTypes.includes('EV charger')"));
+assert('method defaults populate when work types are selected', ramsApp.includes('TRENCHING_METHOD_DEFAULT') && ramsApp.includes('EV_CHARGER_METHOD_DEFAULT') && ramsApp.includes('next.trenchingMethod=TRENCHING_METHOD_DEFAULT') && ramsApp.includes('next.evChargerInstallationMethod=EV_CHARGER_METHOD_DEFAULT'));
+assert('trenching and EV methods are included in generated PDF method output', ramsApp.includes('Trenching method:') && ramsApp.includes('EV charger installation method:'));
