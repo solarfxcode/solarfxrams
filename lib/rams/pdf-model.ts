@@ -1,4 +1,4 @@
-import {getRecommendedHazardsForWorkTypes} from '@/lib/hazards';
+import {getRecommendedHazardsForWorkTypes, recommendedRiskRowsForWorkTypes} from '@/lib/hazards';
 import {migrateRamsDraft} from '@/lib/rams/draft-migration';
 import {getMethodSectionsForDraft} from '@/lib/rams/default-methods';
 import type {HazardSuggestion, Photo, RamsData, RiskRow} from '@/types/rams';
@@ -131,6 +131,26 @@ function buildMaterials(data: RamsData) {
   return Array.from(materials);
 }
 
+function buildPdfRisks(data: RamsData): RamsPdfRisk[] {
+  const existing = data.risks.map(risk => ({
+    ...risk,
+    initialScore: score(risk.severity, risk.likelihood),
+    residualScore: score(risk.residualSeverity, risk.residualLikelihood)
+  }));
+  const existingSources = new Set(existing.map(risk => risk.source));
+  const suggested = recommendedRiskRowsForWorkTypes(data.systemTypes)
+    .filter(risk => !existingSources.has(risk.source))
+    .map((risk, index) => ({
+      ...risk,
+      id: 'pdf-suggested-' + index + '-' + String(risk.code || risk.source).replace(/[^a-z0-9-]/gi, '-'),
+      source: risk.source + ' (recommended for selected work - assessor scoring required)',
+      assessorNotes: 'Recommended by the SolarFX hazard library for the selected work activities. Assessor must confirm suitability and scores.',
+      initialScore: score(risk.severity, risk.likelihood),
+      residualScore: score(risk.residualSeverity, risk.residualLikelihood)
+    }));
+  return [...existing, ...suggested];
+}
+
 export function buildRamsPdfModel(input: Partial<RamsData>): RamsPdfModel {
   const data = migrateRamsDraft(input);
   const documentId = 'SolarFX-RAMS-' + (clean(data.projectReference) || 'Unreferenced') + '-Rev-' + (clean(data.revision) || '1');
@@ -186,7 +206,7 @@ export function buildRamsPdfModel(input: Partial<RamsData>): RamsPdfModel {
       explanation: 'Risk score = Severity x Likelihood. 1-5 Low, 6-10 Medium, 11-15 High, 16-25 Very High.'
     },
     recommendedHazards: getRecommendedHazardsForWorkTypes(data.systemTypes),
-    risks: data.risks.map(risk => ({...risk, initialScore: score(risk.severity, risk.likelihood), residualScore: score(risk.residualSeverity, risk.residualLikelihood)})),
+    risks: buildPdfRisks(data),
     methods,
     ppe: data.ppeMatrix.map(item => ({item: item.item, required: data.ppe.includes(item.item) || item.required, task: item.task, workTypes: item.applicableWorkTypes})),
     emergencyProcedures: buildEmergencyProcedures(data),

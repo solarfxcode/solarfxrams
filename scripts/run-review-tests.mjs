@@ -132,14 +132,31 @@ assert('irrelevant methods are excluded', !pdfModel.buildRamsPdfModel(completeDr
 
 const completed = completeDraft();
 assert('completed workflow has no blocking issues', review.isPdfReadyFromIssues(review.getReviewIssues(completed)) === true);
-assert('PDF model includes all relevant risks', pdfModel.buildRamsPdfModel(completed).risks.length === 1 && pdfModel.buildRamsPdfModel(completed).risks[0].initialScore === 12);
+assert('PDF model expands selected-work risks beyond old saved rows', pdfModel.buildRamsPdfModel(completed).risks.length > 1 && pdfModel.buildRamsPdfModel(completed).risks[0].initialScore === 12);
 assert('PDF model excludes unrelated sections', !pdfModel.buildRamsPdfModel(completed).methods.some(item => item.heading === 'Trenching method'));
 assert('emergency procedures are conditional', pdfModel.buildRamsPdfModel(completeDraft({systemTypes: ['Battery storage'], panelQuantity: '', proposedBatteryLocation: 'Garage wall', pvShutdownInfo: '', batteryShutdownInfo: 'Battery isolator', risks: [risk('r-bat', 'Battery mounting clearances ventilation thermal event', 'library:BAT-001')]})).emergencyProcedures.some(item => item.heading === 'Battery event'));
-assert('multiple risk rows render in PDF model', pdfModel.buildRamsPdfModel(completeDraft({risks: [risk('r1', 'Solar PV roof DC electrical work'), risk('r2', 'Public access falling objects')]})).risks.length === 2);
+assert('multiple risk rows render in PDF model', pdfModel.buildRamsPdfModel(completeDraft({risks: [risk('r1', 'Solar PV roof DC electrical work'), risk('r2', 'Public access falling objects')]})).risks.length >= 2);
 assert('photograph appendix renders selected photos only', pdfModel.buildRamsPdfModel(completeDraft({photos: [{id: 'p1', name: 'one.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Roof', caption: 'Roof', includeInPdf: true}, {id: 'p2', name: 'two.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Other', caption: 'Other', includeInPdf: false}]})).photos.length === 1);
 assert('AI appendix only renders when AI was used', pdfModel.buildRamsPdfModel(completed).aiReview.length === 0 && pdfModel.buildRamsPdfModel(completeDraft({hazards: [{id: 'h1', photoId: 'p1', hazardCode: 'H1', title: 'Fragile roof', observation: 'Cracked tile', potentialHarm: 'Fall', controls: ['Avoid area'], confidence: 0.8, status: 'rejected', assessorComment: 'Not applicable', reviewedAt: '2026-07-13T10:00:00Z'}]})).aiReview.length === 1);
 assert('PV electrical test sheets are not present', !source.ramsApp.toLowerCase().includes('pv electrical testing form') && !source.pdfRoute.toLowerCase().includes('pv electrical test sheet'));
 assert('PDF generation remains available once blocking issues are resolved', review.getReviewIssues(completed).filter(issue => issue.blocking).length === 0);
+
+const fullWorkDraft = completeDraft({
+  systemTypes: ['Solar PV', 'Roof work', 'Scaffold', 'Battery storage', 'EV charger', 'Trenching'],
+  proposedBatteryLocation: 'Garage wall',
+  proposedEvLocation: 'External wall',
+  roofType: 'Pitched tiled roof',
+  accessNotes: 'Scaffold handover checked with exclusion zone below roof edge.',
+  batteryShutdownInfo: 'Battery isolator adjacent to battery.',
+  evShutdownInfo: 'EV charger circuit isolated at consumer unit.',
+  photos: [{id: 'p1', name: 'roof.jpg', dataUrl: 'data:image/jpeg;base64,AA==', category: 'Roof', caption: 'Roof and scaffold access', includeInPdf: true}],
+  risks: [risk('r-existing', 'Existing assessed Solar PV roof DC electrical work', 'manual')]
+});
+const fullWorkModel = pdfModel.buildRamsPdfModel(fullWorkDraft);
+const fullMethodHeadings = fullWorkModel.methods.map(item => item.heading);
+assert('selected work combination creates multiple relevant PDF risks', fullWorkModel.risks.length > 10 && fullWorkModel.risks.some(item => item.hazard.toLowerCase().includes('battery')) && fullWorkModel.risks.some(item => item.hazard.toLowerCase().includes('charger')) && fullWorkModel.risks.some(item => item.hazard.toLowerCase().includes('trench')));
+assert('selected work combination includes all relevant method sections', ['General method', 'Roof work method', 'Battery installation method', 'EV charger installation method', 'Trenching method', 'PPE matrix'].every(title => title === 'PPE matrix' ? fullWorkModel.ppe.length > 0 : fullMethodHeadings.includes(title)));
+assert('brand-new draft uses expanded structure', defaults.createEmptyDraft().revisionHistory.length === 1 && defaults.createEmptyDraft().ppeMatrix.length > 1 && pdfModel.buildRamsPdfModel(defaults.createEmptyDraft()).methods.length > 3);
 
 const batteryMethodIssue = review.getReviewIssues(completeDraft({systemTypes: ['Battery storage'], panelQuantity: '', proposedBatteryLocation: 'Garage wall', pvShutdownInfo: '', batteryShutdownInfo: 'Battery isolator', batteryInstallationMethod: '', risks: [risk('r-bat', 'Battery mounting clearances ventilation thermal event', 'library:BAT-001')]})).find(issue => issue.id === 'method-battery');
 assert('battery method issue points to rendered field', batteryMethodIssue?.fieldId === 'battery-installation-method' && source.ramsApp.includes("id={section.id}"));
@@ -166,4 +183,5 @@ assert('Generate PDF button reaches click handler and API', source.ramsApp.inclu
 assert('PDF API route exists and returns a PDF', source.pdfRoute.includes('export async function POST') && source.pdfRoute.includes("'content-type': 'application/pdf'") && source.pdfRoute.includes("doc.output('arraybuffer')"));
 assert('PDF API route protects authenticated data', source.pdfRoute.includes('verifySession') && source.pdfRoute.includes('SESSION_COOKIE_NAME') && source.pdfRoute.includes('Not authenticated.'));
 assert('professional PDF sections are present', ['Document control', 'Project information', 'Scope of works', 'Risk assessment matrix', 'Dynamic risk assessment', 'Method statement', 'PPE matrix', 'Emergency procedures', 'Environmental controls', 'Monitoring and review', 'Sign-off'].every(title => source.pdfRoute.includes(title)));
+assert('PDF footer exposes v2 engine marker', source.pdfRoute.includes('RAMS PDF Engine v2'));
 assert('new UI styles are present', source.css.includes('.method-card') && source.css.includes('.completion-pill'));

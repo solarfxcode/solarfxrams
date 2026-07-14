@@ -3,7 +3,8 @@ import path from 'node:path';
 import {NextRequest, NextResponse} from 'next/server';
 import {jsPDF} from 'jspdf';
 import {SESSION_COOKIE_NAME, verifySession} from '@/lib/auth';
-import {buildRamsPdfModel, type RamsPdfModel} from '@/lib/rams/pdf-model';
+import {buildRamsPdfModel} from '@/lib/rams/pdf-model';
+import type {RamsData} from '@/types/rams';
 
 const pageWidth = 210;
 const pageHeight = 297;
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest) {
   }
   if (!payload?.data) return NextResponse.json({error: 'Invalid PDF request.'}, {status: 400});
 
-  const model = buildRamsPdfModel(payload.data as Partial<RamsPdfModel> as any);
+  const model = buildRamsPdfModel(payload.data as Partial<RamsData>);
   const filename = clean(payload.pdfFileName) || (model.documentControl.documentId.replace(/[^a-z0-9-]/gi, '_') + '.pdf');
   const logoDataUrl = await loadLogoDataUrl();
   const doc = new jsPDF({unit: 'mm', format: 'a4'});
@@ -74,6 +75,7 @@ export async function POST(request: NextRequest) {
       doc.setFontSize(8);
       doc.setTextColor(95, 108, 125);
       doc.text(model.documentControl.documentId, margin, pageHeight - 9);
+      doc.text('RAMS PDF Engine v2', pageWidth / 2, pageHeight - 9, {align: 'center'});
       doc.text('Page ' + page + ' of ' + pageCount, pageWidth - margin, pageHeight - 9, {align: 'right'});
     }
   }
