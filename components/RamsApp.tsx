@@ -1,6 +1,6 @@
 'use client';
 
-import {useEffect, useMemo, useRef, useState, type MouseEvent} from 'react';
+import {Component, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode} from 'react';
 import {useRouter} from 'next/navigation';
 import {
   createDefaultPpeMatrix,
@@ -11,6 +11,7 @@ import {
   ppeOptions,
   workTypes
 } from '@/lib/defaults';
+import {createStoredPhoto, deletePhotoBlob, getPhotoBlob, isQuotaError, MAX_IMAGE_BYTES, MAX_PHOTOS, MAX_TOTAL_IMAGE_BYTES, migrateLegacyPhoto, PHOTO_UPLOAD_ERROR} from '@/lib/browser-photo-storage';
 import {recommendedRiskRowsForWorkTypes} from '@/lib/hazards';
 import {getDefaultMethodByField, getMethodSectionsForDraft, type MethodSectionDefinition} from '@/lib/rams/default-methods';
 import {migrateRamsDraft, populateDefaultsForWorkType} from '@/lib/rams/draft-migration';
@@ -22,6 +23,21 @@ const steps = [...REVIEW_STEP_LABELS];
 const riskScale = [0, 1, 2, 3, 4, 5];
 const SLOW_DASHBOARD_STEP_MS = 5000;
 type ListKey = 'systemTypes' | 'ppe' | 'personsAtRisk' | 'equipment' | 'materials';
+type DraftRecoveryState = {message: string; draft: RamsData};
+
+class SafeSection extends Component<{children: ReactNode; fallback: string}, {failed: boolean}> {
+  state = {failed: false};
+  static getDerivedStateFromError() {
+    return {failed: true};
+  }
+  componentDidCatch(error: unknown) {
+    console.error('[SolarFX RAMS] Protected section failed', error);
+  }
+  render() {
+    if (this.state.failed) return <p className='warning' role='alert'>{this.props.fallback}</p>;
+    return this.props.children;
+  }
+}
 
 function makeId() {
   return typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : 'id-' + Date.now() + '-' + Math.random().toString(16).slice(2);
@@ -43,6 +59,10 @@ function DashboardSkeleton() {
   </>;
 }
 
+function draftForStorage(draft: RamsData): RamsData {
+  return {...draft, photos: draft.photos.map(photo => ({...photo, dataUrl: undefined}))};
+}
+
 export default function RamsApp() {
   const router = useRouter();
   const [step, setStep] = useState(0);
@@ -50,6 +70,9 @@ export default function RamsApp() {
   const [message, setMessage] = useState('');
   const [reviewNav, setReviewNav] = useState<ReviewNavigationState>({});
   const [draftReady, setDraftReady] = useState(false);
+  const [draftRecovery, setDraftRecovery] = useState<DraftRecoveryState | null>(null);
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const previewUrlsRef = useRef<Record<string, string>>({});
   const [startNewOpen, setStartNewOpen] = useState(false);
   const [startNewConfirmed, setStartNewConfirmed] = useState(false);
   const stepperRef = useRef<HTMLDivElement | null>(null);
@@ -69,23 +92,81 @@ export default function RamsApp() {
 
   useEffect(() => {
     const slowDraft = logDashboardSlowStep('draft load');
-    try {
-      const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
-      if (saved) setData(migrateRamsDraft(JSON.parse(saved)));
-      console.info('[SolarFX dashboard] draft loaded', {hasDraft: Boolean(saved)});
-    } catch (error) {
-      console.warn('[SolarFX dashboard] draft load failed', error);
-    } finally {
-      setDraftReady(true);
-      console.info('[SolarFX dashboard] loading complete');
-      window.clearTimeout(slowDraft);
+    let cancelled = false;
+    async function loadDraft() {
+      try {
+        const saved = localStorage.getItem(DRAFT_STORAGE_KEY);
+        if (saved) {
+          const migrated = migrateRamsDraft(JSON.parse(saved));
+          const photoResults = await Promise.allSettled(migrated.photos.map(photo => migrateLegacyPhoto(photo)));
+          const photos = photoResults.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : []);
+          const recovered = {...migrated, photos};
+          if (!cancelled) {
+            if (photos.length !== migrated.photos.length) setDraftRecovery({message: 'The saved draft contains invalid photo data.', draft: recovered});
+            setData(recovered);
+          }
+        }
+        console.info('[SolarFX dashboard] draft loaded', {hasDraft: Boolean(saved)});
+      } catch (error) {
+        console.warn('[SolarFX dashboard] draft load failed', error);
+        if (!cancelled) setDraftRecovery({message: 'The saved draft contains invalid photo data.', draft: createEmptyDraft()});
+      } finally {
+        if (!cancelled) {
+          setDraftReady(true);
+          console.info('[SolarFX dashboard] loading complete');
+        }
+        window.clearTimeout(slowDraft);
+      }
     }
+    void loadDraft();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
     if (!draftReady) return;
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(data));
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draftForStorage(data)));
+    } catch (error) {
+      console.warn('[SolarFX dashboard] draft autosave failed', error);
+      setMessage('Draft autosave could not complete on this device. Your current screen remains available.');
+    }
   }, [data, draftReady]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const activePhotoIds = new Set(data.photos.map(photo => photo.id));
+    setPreviewUrls(current => {
+      const next = {...current};
+      Object.entries(next).forEach(([id, url]) => {
+        if (!activePhotoIds.has(id)) {
+          URL.revokeObjectURL(url);
+          delete next[id];
+        }
+      });
+      return next;
+    });
+    data.photos.forEach(photo => {
+      if (!photo.storageRef || previewUrls[photo.id]) return;
+      getPhotoBlob(photo.storageRef).then(blob => {
+        if (!blob || cancelled) return;
+        const url = URL.createObjectURL(blob);
+        setPreviewUrls(current => current[photo.id] ? current : {...current, [photo.id]: url});
+      }).catch(error => console.warn('[SolarFX photos] preview load failed', error));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [data.photos, previewUrls]);
+
+  useEffect(() => {
+    previewUrlsRef.current = previewUrls;
+  }, [previewUrls]);
+
+  useEffect(() => () => {
+    Object.values(previewUrlsRef.current).forEach(url => URL.revokeObjectURL(url));
+  }, []);
 
   const issues = useMemo(() => getReviewIssues(data), [data]);
   const stepSummaries = useMemo(() => getReviewStepSummaries(issues), [issues]);
@@ -191,30 +272,50 @@ export default function RamsApp() {
 
   async function addPhotos(files: FileList | null) {
     if (!files) return;
-    const list: Photo[] = [];
-    for (const f of Array.from(files).slice(0, 20 - data.photos.length)) {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result));
-        r.onerror = reject;
-        r.readAsDataURL(f);
-      });
-      list.push({id: makeId(), name: f.name, originalFilename: f.name, dataUrl, category: 'Potential hazard', caption: '', includeInPdf: false, surveyorNotes: '', aiObservation: '', confirmedHazard: '', confirmedControls: '', assessorDecision: '', takenAt: new Date().toISOString()});
+    const accepted = Array.from(files).slice(0, Math.max(0, MAX_PHOTOS - data.photos.length));
+    if (!accepted.length) {
+      setMessage('Maximum photo limit reached.');
+      return;
     }
-    set('photos', [...data.photos, ...list]);
+    const currentTotal = data.photos.reduce((total, photo) => total + Number(photo.size || 0), 0);
+    const incomingTotal = accepted.reduce((total, file) => total + file.size, 0);
+    if (incomingTotal + currentTotal > MAX_TOTAL_IMAGE_BYTES) {
+      setMessage(PHOTO_UPLOAD_ERROR);
+      return;
+    }
+    const list: Photo[] = [];
+    for (const f of accepted) {
+      try {
+        if (f.size > MAX_IMAGE_BYTES) throw new Error('Image too large');
+        list.push(await createStoredPhoto(f, makeId()));
+      } catch (error) {
+        console.warn('[SolarFX photos] upload failed', error);
+        setMessage(isQuotaError(error) ? 'Photo storage is full on this device. Remove photos or recover the draft without photos.' : PHOTO_UPLOAD_ERROR);
+      }
+    }
+    if (list.length) set('photos', [...data.photos, ...list]);
   }
 
   async function analyse() {
     setMessage('Analysing photographs...');
-    const r = await fetch('/api/ai/analyse-hazards', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({photos: data.photos, job: {address: data.address, scope: data.scope}})});
-    const j = await r.json();
-    if (!r.ok) {
-      setMessage(j.error || 'Analysis failed');
-      return;
+    try {
+      const photos = await Promise.all(data.photos.map(async photo => {
+        const blob = await getPhotoBlob(photo.storageRef);
+        return {...photo, dataUrl: blob ? await new Promise<string>((resolve, reject) => {const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob);}) : undefined};
+      }));
+      const r = await fetch('/api/ai/analyse-hazards', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({photos, job: {address: data.address, scope: data.scope}})});
+      const j = await r.json();
+      if (!r.ok) {
+        setMessage(j.error || 'Analysis failed');
+        return;
+      }
+      const hazards: HazardSuggestion[] = (j.suggestions || []).map((s: any) => ({id: makeId(), photoId: s.photoId, hazardCode: s.hazardCode, title: s.title, observation: s.observation, potentialHarm: s.potentialHarm, controls: s.controls || [], confidence: s.confidence || 0, status: 'pending', assessorComment: ''}));
+      setData(d => ({...d, hazards, declarations: {...d.declarations, aiReviewed: false}}));
+      setMessage('AI analysis complete. Review Centre will list unreviewed suggestions until each item is accepted or rejected.');
+    } catch (error) {
+      console.error('[SolarFX photos] AI analysis failed', error);
+      setMessage('Photo analysis could not complete. Please try again or continue without AI photo analysis.');
     }
-    const hazards: HazardSuggestion[] = (j.suggestions || []).map((s: any) => ({id: makeId(), photoId: s.photoId, hazardCode: s.hazardCode, title: s.title, observation: s.observation, potentialHarm: s.potentialHarm, controls: s.controls || [], confidence: s.confidence || 0, status: 'pending', assessorComment: ''}));
-    setData(d => ({...d, hazards, declarations: {...d.declarations, aiReviewed: false}}));
-    setMessage('AI analysis complete. Review Centre will list unreviewed suggestions until each item is accepted or rejected.');
   }
 
   function acceptHazard(h: HazardSuggestion, status: 'accepted' | 'rejected') {
@@ -258,7 +359,8 @@ export default function RamsApp() {
   }
   function revokeDraftObjectUrls(draft: RamsData) {
     draft.photos.forEach(photo => {
-      if (photo.dataUrl.startsWith('blob:')) URL.revokeObjectURL(photo.dataUrl);
+      if (photo.dataUrl?.startsWith('blob:')) URL.revokeObjectURL(photo.dataUrl);
+      void deletePhotoBlob(photo.storageRef);
     });
   }
   function resetDraftToInitialState() {
@@ -266,7 +368,11 @@ export default function RamsApp() {
     revokeDraftObjectUrls(data);
     localStorage.removeItem(DRAFT_STORAGE_KEY);
     sessionStorage.removeItem(DRAFT_STORAGE_KEY);
-    localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(empty));
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draftForStorage(empty)));
+    } catch (error) {
+      console.warn('[SolarFX dashboard] reset autosave failed', error);
+    }
     setData(empty);
     setDraftReady(true);
     setReviewNav({});
@@ -279,6 +385,39 @@ export default function RamsApp() {
   function confirmStartNewRams() {
     if (!startNewConfirmed) return;
     resetDraftToInitialState();
+  }
+  function recoverDraftWithoutPhotos() {
+    if (!draftRecovery) return;
+    const recovered = {...draftRecovery.draft, photos: []};
+    data.photos.forEach(photo => void deletePhotoBlob(photo.storageRef));
+    setData(recovered);
+    try {
+      localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draftForStorage(recovered)));
+    } catch (error) {
+      console.warn('[SolarFX recovery] recovery autosave failed', error);
+    }
+    setDraftRecovery(null);
+    setMessage('Draft recovered without photos.');
+  }
+  function clearBrokenDraft() {
+    data.photos.forEach(photo => void deletePhotoBlob(photo.storageRef));
+    localStorage.removeItem(DRAFT_STORAGE_KEY);
+    sessionStorage.removeItem(DRAFT_STORAGE_KEY);
+    setData(createEmptyDraft());
+    setDraftRecovery(null);
+    setStep(0);
+    setMessage('Broken draft cleared.');
+  }
+  function removePhoto(photo: Photo) {
+    const previewUrl = previewUrls[photo.id];
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrls(current => {
+      const next = {...current};
+      delete next[photo.id];
+      return next;
+    });
+    void deletePhotoBlob(photo.storageRef);
+    set('photos', data.photos.filter(item => item.id !== photo.id));
   }
   function navigateToIssue(issue: ReviewIssue) {
     setReviewNav({returnStep: 9, targetIssueId: issue.id, targetFieldId: issue.fieldId, targetIssueTitle: issue.title});
@@ -303,7 +442,13 @@ export default function RamsApp() {
     console.log('Calling PDF API');
     setMessage('Generating PDF...');
     try {
-      const response = await fetch('/api/pdf', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({data, pdfFileName})});
+      const photos = await Promise.all(data.photos.map(async photo => {
+        if (!photo.includeInPdf) return photo;
+        const blob = await getPhotoBlob(photo.storageRef);
+        const dataUrl = blob ? await new Promise<string>((resolve, reject) => {const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(blob);}) : undefined;
+        return {...photo, dataUrl};
+      }));
+      const response = await fetch('/api/pdf', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({data: {...data, photos}, pdfFileName})});
       if (!response.ok) {
         let details = '';
         try {
@@ -346,6 +491,11 @@ export default function RamsApp() {
 
   if (!draftReady) return <DashboardSkeleton/>;
 
+  if (draftRecovery) return <>
+    <header className='header'><div className='header-inner'><div className='brand'><img src='/branding/solarfx-logo-horizontal.png' alt='SolarFX'/><strong>RAMS Generator</strong></div></div></header>
+    <main className='shell app-shell'><section className='card'><h1>The saved draft contains invalid photo data.</h1><p className='warning'>{draftRecovery.message}</p><p>The RAMS text data can be recovered, but one or more saved photo entries could not be restored safely.</p><div className='toolbar'><button className='btn primary' onClick={recoverDraftWithoutPhotos}>Recover draft without photos</button><button className='btn danger' onClick={clearBrokenDraft}>Clear draft and start again</button></div></section></main>
+  </>;
+
   return <>
     <header className='header'><div className='header-inner'><div className='brand'><img src='/branding/solarfx-logo-horizontal.png' alt='SolarFX'/><strong>RAMS Generator</strong></div><div className='header-actions'><button type='button' className='btn secondary start-new-button' onClick={openStartNewModal}>Start new RAMS</button><button className='btn secondary header-logout' onClick={logout}>Log out</button></div></div></header>
     <main className='shell app-shell'>
@@ -357,8 +507,8 @@ export default function RamsApp() {
         {step === 1 && <><h1 id='step-heading'>Import existing PDF</h1><p className='muted'>Import project details from an existing RAMS or survey PDF, then verify them before final output.</p><input type='file' accept='application/pdf' onChange={e => e.target.files?.[0] && importPdf(e.target.files[0])}/>{data.importedPdfAt && <p className='ok'>Imported on {new Date(data.importedPdfAt).toLocaleString('en-GB')}</p>}</>}
         {step === 2 && <><h1 id='step-heading'>System and work activities</h1><h2>Selected work activities</h2>{checkboxList('system-work-types', 'systemTypes', workTypes)}<div className='grid two' style={{marginTop: 18}}>{field('Panel quantity', 'panelQuantity', 'field-panel-quantity')}{field('Panel model', 'panelModel', 'field-panel-model')}{field('Inverter model', 'inverterModel', 'field-inverter-model')}{field('Battery model', 'batteryModel', 'field-battery-model')}{field('Proposed battery location', 'proposedBatteryLocation', 'proposed-battery-location')}{field('Proposed EV charger location', 'proposedEvLocation', 'proposed-ev-location')}</div><h2>Persons at risk</h2>{checkboxList('persons-at-risk-list', 'personsAtRisk', personsAtRiskOptions)}{textareaField('Other persons at risk', 'otherPersonsAtRisk', 'field-other-persons-at-risk', 2)}<h2>Plant, tools and equipment</h2>{checkboxList('equipment-list', 'equipment', equipmentOptions)}{textareaField('Equipment notes', 'equipmentNotes', 'field-equipment-notes', 3)}<h2>Materials</h2>{checkboxList('materials-list', 'materials', materialOptions)}{textareaField('Materials notes', 'materialNotes', 'field-material-notes', 3)}</>}
         {step === 3 && <><h1 id='step-heading'>Site conditions</h1><div className='grid two'>{field('Roof type', 'roofType', 'field-roof-type')}{field('Roof condition', 'roofCondition', 'field-roof-condition')}</div>{textareaField('Access notes', 'accessNotes', 'field-access-notes', 4)}{textareaField('Electrical notes', 'electricalNotes', 'field-electrical-notes', 4)}{textareaField('Environmental notes', 'environmentalNotes', 'field-environmental-notes', 4)}{textareaField('Environmental controls notes', 'environmentalControlsNotes', 'field-environmental-controls-notes', 4)}</>}
-        {step === 4 && <><h1 id='step-heading'>Site photographs</h1><input type='file' accept='image/jpeg,image/png,image/webp' multiple onChange={e => addPhotos(e.target.files)}/><div className='photo-grid' style={{marginTop: 18}}>{data.photos.map((p, index) => <div className='photo' id={'photo-' + p.id} key={p.id}><img src={p.dataUrl} alt={'Site photo ' + (index + 1)}/><label className='checkbox-card'><input type='checkbox' checked={!!p.includeInPdf} onChange={e => updatePhoto(p.id, {includeInPdf: e.target.checked})}/><span>Include in final PDF</span></label><div className='field'><label htmlFor={'photo-category-' + p.id}>Category</label><select id={'photo-category-' + p.id} value={p.category} onChange={e => updatePhoto(p.id, {category: e.target.value})}><option value=''>Select category</option><option>Potential hazard</option><option>Front elevation</option><option>Rear elevation</option><option>Roof</option><option>Roof access</option><option>Consumer unit</option><option>Battery location</option><option>EV charger location</option><option>Cable route</option><option>Trenching route</option></select></div><div className='field'><label htmlFor={'photo-caption-' + p.id}>Caption</label><input id={'photo-caption-' + p.id} value={p.caption} onChange={e => updatePhoto(p.id, {caption: e.target.value})}/></div><div className='field'><label htmlFor={'photo-surveyor-notes-' + p.id}>Surveyor notes</label><textarea id={'photo-surveyor-notes-' + p.id} value={p.surveyorNotes || ''} onChange={e => updatePhoto(p.id, {surveyorNotes: e.target.value})}/></div><div className='field'><label htmlFor={'photo-confirmed-controls-' + p.id}>Confirmed controls</label><textarea id={'photo-confirmed-controls-' + p.id} value={p.confirmedControls || ''} onChange={e => updatePhoto(p.id, {confirmedControls: e.target.value})}/></div><button className='btn danger' onClick={() => set('photos', data.photos.filter(x => x.id !== p.id))}>Remove</button></div>)}</div></>}
-        {step === 5 && <><div className='toolbar'><div><h1 id='step-heading'>AI hazard review</h1><p className='muted'>AI suggestions are observations only. Accept or reject every item.</p></div><button className='btn primary' disabled={!data.photos.length} onClick={analyse}>Analyse photographs</button></div><div className='grid'>{data.hazards.map((h, index) => <div className='hazard' id={'ai-suggestion-' + h.id} key={h.id}><span className='badge'>{h.hazardCode} - {Math.round(h.confidence * 100)}% confidence</span><h3>{h.title}</h3><p>{h.observation}</p><p><strong>Potential harm:</strong> {h.potentialHarm}</p><div className='field'><label htmlFor={'ai-controls-' + h.id}>Controls</label><textarea id={'ai-controls-' + h.id} value={h.controls.join('\\n')} onChange={e => updateHazard(h.id, {controls: e.target.value.split('\\n').map(x => x.trim()).filter(Boolean)})}/></div><div className='field'><label htmlFor={'ai-comment-' + h.id}>Assessor comment</label><input id={'ai-comment-' + h.id} value={h.assessorComment} onChange={e => updateHazard(h.id, {assessorComment: e.target.value})}/></div><p><strong>Status:</strong> {h.status}{h.reviewedAt ? ' - reviewed ' + new Date(h.reviewedAt).toLocaleString('en-GB') : ''}</p><button className='btn primary' onClick={() => acceptHazard(h, 'accepted')}>Assessor accepts</button> <button className='btn danger' onClick={() => acceptHazard(h, 'rejected')}>Reject</button>{index === 0 && <p className='muted'>Use Review Centre to return here directly if any suggestion remains unreviewed.</p>}</div>)}</div></>}
+        {step === 4 && <SafeSection fallback='Photo upload could not load. Your draft is still available.'><><h1 id='step-heading'>Site photographs</h1><input type='file' accept='image/jpeg,image/png,image/webp' multiple onChange={e => addPhotos(e.target.files)}/><div className='photo-grid' style={{marginTop: 18}}>{data.photos.map((p, index) => <div className='photo' id={'photo-' + p.id} key={p.id}>{previewUrls[p.id] ? <img src={previewUrls[p.id]} alt={'Site photo ' + (index + 1)}/> : <div className='photo-missing'>Preview unavailable</div>}<label className='checkbox-card'><input type='checkbox' checked={!!p.includeInPdf} onChange={e => updatePhoto(p.id, {includeInPdf: e.target.checked})}/><span>Include in final PDF</span></label><div className='field'><label htmlFor={'photo-category-' + p.id}>Category</label><select id={'photo-category-' + p.id} value={p.category} onChange={e => updatePhoto(p.id, {category: e.target.value})}><option value=''>Select category</option><option>Potential hazard</option><option>Front elevation</option><option>Rear elevation</option><option>Roof</option><option>Roof access</option><option>Consumer unit</option><option>Battery location</option><option>EV charger location</option><option>Cable route</option><option>Trenching route</option></select></div><div className='field'><label htmlFor={'photo-caption-' + p.id}>Caption</label><input id={'photo-caption-' + p.id} value={p.caption} onChange={e => updatePhoto(p.id, {caption: e.target.value})}/></div><div className='field'><label htmlFor={'photo-surveyor-notes-' + p.id}>Surveyor notes</label><textarea id={'photo-surveyor-notes-' + p.id} value={p.surveyorNotes || ''} onChange={e => updatePhoto(p.id, {surveyorNotes: e.target.value})}/></div><div className='field'><label htmlFor={'photo-confirmed-controls-' + p.id}>Confirmed controls</label><textarea id={'photo-confirmed-controls-' + p.id} value={p.confirmedControls || ''} onChange={e => updatePhoto(p.id, {confirmedControls: e.target.value})}/></div><button className='btn danger' onClick={() => removePhoto(p)}>Remove</button></div>)}</div></></SafeSection>}
+        {step === 5 && <SafeSection fallback='AI photo review could not load. You can continue without AI analysis.'><><div className='toolbar'><div><h1 id='step-heading'>AI hazard review</h1><p className='muted'>AI suggestions are observations only. Accept or reject every item.</p></div><button className='btn primary' disabled={!data.photos.length} onClick={analyse}>Analyse photographs</button></div><div className='grid'>{data.hazards.map((h, index) => <div className='hazard' id={'ai-suggestion-' + h.id} key={h.id}><span className='badge'>{h.hazardCode} - {Math.round(h.confidence * 100)}% confidence</span><h3>{h.title}</h3><p>{h.observation}</p><p><strong>Potential harm:</strong> {h.potentialHarm}</p><div className='field'><label htmlFor={'ai-controls-' + h.id}>Controls</label><textarea id={'ai-controls-' + h.id} value={h.controls.join('\\n')} onChange={e => updateHazard(h.id, {controls: e.target.value.split('\\n').map(x => x.trim()).filter(Boolean)})}/></div><div className='field'><label htmlFor={'ai-comment-' + h.id}>Assessor comment</label><input id={'ai-comment-' + h.id} value={h.assessorComment} onChange={e => updateHazard(h.id, {assessorComment: e.target.value})}/></div><p><strong>Status:</strong> {h.status}{h.reviewedAt ? ' - reviewed ' + new Date(h.reviewedAt).toLocaleString('en-GB') : ''}</p><button className='btn primary' onClick={() => acceptHazard(h, 'accepted')}>Assessor accepts</button> <button className='btn danger' onClick={() => acceptHazard(h, 'rejected')}>Reject</button>{index === 0 && <p className='muted'>Use Review Centre to return here directly if any suggestion remains unreviewed.</p>}</div>)}</div></></SafeSection>}
         {step === 6 && <><div className='toolbar'><div><h1 id='step-heading'>Risk assessment</h1><p>Scores are severity x likelihood. Suggested rows start unscored so the assessor must confirm risk scores.</p></div><div className='toolbar-actions'><button className='btn secondary' onClick={addRecommendedRisks}>Add recommended risks</button><button className='btn secondary' onClick={addRiskRow}>Add risk row</button></div></div><div id='risk-list'>{data.risks.map((r, index) => <div className='hazard' id={'risk-row-' + r.id} key={r.id}><h3>Risk row {index + 1}</h3>{r.code && <span className='badge'>{r.code} - {r.category}</span>}<div className='grid two'><div className='field'><label htmlFor={'risk-hazard-' + r.id}>Hazard</label><input id={'risk-hazard-' + r.id} value={r.hazard} onChange={e => updateRisk(r.id, {hazard: e.target.value})}/></div><div className='field'><label htmlFor={'risk-responsible-' + r.id}>Responsible person</label><input id={'risk-responsible-' + r.id} value={r.responsible} onChange={e => updateRisk(r.id, {responsible: e.target.value})}/></div></div><div className='field'><label htmlFor={'risk-persons-' + r.id}>Persons at risk</label><input id={'risk-persons-' + r.id} value={r.persons} onChange={e => updateRisk(r.id, {persons: e.target.value})}/></div><div className='field'><label htmlFor={'risk-harm-' + r.id}>Potential harm</label><input id={'risk-harm-' + r.id} value={r.harm} onChange={e => updateRisk(r.id, {harm: e.target.value})}/></div><div className='field'><label htmlFor={'risk-controls-' + r.id}>Existing control measures</label><textarea id={'risk-controls-' + r.id} value={r.controls} onChange={e => updateRisk(r.id, {controls: e.target.value})}/></div><div className='field'><label htmlFor={'risk-additional-controls-' + r.id}>Additional site-specific controls</label><textarea id={'risk-additional-controls-' + r.id} value={r.additionalControls || ''} onChange={e => updateRisk(r.id, {additionalControls: e.target.value})}/></div><div className='grid four'>{riskNumber(r, 'severity', 'Initial severity')}{riskNumber(r, 'likelihood', 'Initial likelihood')}{riskNumber(r, 'residualSeverity', 'Residual severity')}{riskNumber(r, 'residualLikelihood', 'Residual likelihood')}</div><p><strong>Initial:</strong> {score(r.severity, r.likelihood)} ({riskName(score(r.severity, r.likelihood))}) - <strong>Residual:</strong> {score(r.residualSeverity, r.residualLikelihood)} ({riskName(score(r.residualSeverity, r.residualLikelihood))})</p><div className='field'><label htmlFor={'risk-assessor-notes-' + r.id}>Assessor notes</label><textarea id={'risk-assessor-notes-' + r.id} value={r.assessorNotes || ''} onChange={e => updateRisk(r.id, {assessorNotes: e.target.value})}/></div><button className='btn danger' onClick={() => set('risks', data.risks.filter(x => x.id !== r.id))}>Remove risk row</button></div>)}</div></>}
         {step === 7 && <><h1 id='step-heading'>Method statement</h1><div className='method-section-list'>{methodSections.map(renderMethodSection)}</div>{textareaField('Senior-review notes for Very High residual risks', 'seniorReviewNotes', 'field-senior-review-notes', 4)}<h2>PPE matrix</h2><div className='grid three' id='ppe-matrix-list'>{ppeOptions.map(x => {const matrixItem = data.ppeMatrix.find(item => item.item === x); return <label className='checkbox-card ppe-card' key={x}><input type='checkbox' checked={data.ppe.includes(x)} onChange={() => toggleArray('ppe', x)}/><span><strong>{x}</strong>{matrixItem && <small>{matrixItem.task}</small>}</span></label>;})}</div>{textareaField('PPE notes', 'ppeNotes', 'field-ppe-notes', 3)}{textareaField('Monitoring and review notes', 'monitoringReviewNotes', 'field-monitoring-review-notes', 4)}</>}
         {step === 8 && <><h1 id='step-heading'>Emergency arrangements</h1><div className='grid two'>{field('First aider', 'firstAider', 'field-first-aider')}{field('First aid kit location', 'firstAidKitLocation', 'field-first-aid-kit-location')}{field('Nearest hospital', 'nearestHospital', 'field-nearest-hospital')}{field('Assembly point', 'assemblyPoint', 'field-assembly-point')}{field('Fire extinguisher location', 'fireExtinguisherLocation', 'field-fire-extinguisher-location')}{field('Site isolation point', 'siteIsolationPoint', 'field-site-isolation-point')}{field('Emergency contact', 'emergencyContact', 'field-emergency-contact-emergency')}{field('Emergency phone', 'emergencyPhone', 'field-emergency-phone')}</div>{textareaField('PV shutdown / isolation information', 'pvShutdownInfo', 'field-pv-shutdown', 4)}{data.systemTypes.includes('Battery storage') && textareaField('Battery shutdown / isolation information', 'batteryShutdownInfo', 'field-battery-shutdown', 4)}{data.systemTypes.includes('EV charger') && textareaField('EV charger shutdown / isolation information', 'evShutdownInfo', 'field-ev-shutdown', 4)}<p><strong>Emergency services:</strong> 999</p></>}

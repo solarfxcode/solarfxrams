@@ -33,6 +33,7 @@ const source = {
   review: await read('lib/review.ts'),
   defaults: await read('lib/defaults.ts'),
   defaultMethods: await read('lib/rams/default-methods.ts'),
+  browserPhotoStorage: await read('lib/browser-photo-storage.ts'),
   draftMigration: await read('lib/rams/draft-migration.ts'),
   hazards: await read('lib/hazards.ts'),
   pdfModel: await read('lib/rams/pdf-model.ts'),
@@ -185,3 +186,11 @@ assert('PDF API route protects authenticated data', source.pdfRoute.includes('ve
 assert('professional PDF sections are present', ['Document control', 'Project information', 'Scope of works', 'Risk assessment matrix', 'Dynamic risk assessment', 'Method statement', 'PPE matrix', 'Emergency procedures', 'Environmental controls', 'Monitoring and review', 'Sign-off'].every(title => source.pdfRoute.includes(title)));
 assert('PDF footer exposes v2 engine marker', source.pdfRoute.includes('RAMS PDF Engine v2'));
 assert('new UI styles are present', source.css.includes('.method-card') && source.css.includes('.completion-pill'));
+assert('photo uploads use IndexedDB instead of localStorage base64', source.browserPhotoStorage.includes('indexedDB.open') && source.browserPhotoStorage.includes('compressImage') && source.ramsApp.includes('createStoredPhoto') && !source.ramsApp.includes('r.readAsDataURL(f)'));
+assert('draft autosave strips photo data URLs', source.ramsApp.includes('draftForStorage') && source.ramsApp.includes('dataUrl: undefined') && source.ramsApp.includes('JSON.stringify(draftForStorage(data))'));
+assert('photo upload limits and invalid type message are present', source.browserPhotoStorage.includes('MAX_IMAGE_BYTES') && source.browserPhotoStorage.includes('MAX_TOTAL_IMAGE_BYTES') && source.browserPhotoStorage.includes('MAX_PHOTOS') && source.browserPhotoStorage.includes('This image could not be added. Please use a JPEG, PNG or WebP image under the permitted size.'));
+assert('legacy base64 photos migrate into IndexedDB storage', source.browserPhotoStorage.includes('migrateLegacyPhoto') && source.browserPhotoStorage.includes('dataUrlToBlob') && source.ramsApp.includes('Promise.allSettled(migrated.photos.map(photo => migrateLegacyPhoto(photo)))'));
+assert('saved draft photo recovery screen is available', source.ramsApp.includes('The saved draft contains invalid photo data.') && source.ramsApp.includes('Recover draft without photos') && source.ramsApp.includes('Clear draft and start again'));
+assert('photo deletion releases object URLs and storage', source.ramsApp.includes('URL.revokeObjectURL(previewUrl)') && source.ramsApp.includes('deletePhotoBlob(photo.storageRef)'));
+assert('PDF generation hydrates selected photo blobs', source.ramsApp.includes('getPhotoBlob(photo.storageRef)') && source.ramsApp.includes('body: JSON.stringify({data: {...data, photos}, pdfFileName})'));
+assert('photo gallery and AI review have error boundaries', source.ramsApp.includes('<SafeSection fallback=') && source.ramsApp.includes('Photo upload could not load') && source.ramsApp.includes('AI photo review could not load'));

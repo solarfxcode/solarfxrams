@@ -24,7 +24,11 @@ export type RevisionHistoryEntry = {
 export type Photo = {
   id: string;
   name: string;
-  dataUrl: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  storageRef?: string;
+  dataUrl?: string;
   category: string;
   caption: string;
   includeInPdf?: boolean;
